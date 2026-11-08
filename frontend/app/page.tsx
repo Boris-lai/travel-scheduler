@@ -1,16 +1,23 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import AttractionCard from "@/app/components/AttractionCard";
-import { searchDestinations } from "@/app/lib/api";
+import {
+  addTripPlace,
+  listTripPlaces,
+  listTrips,
+  searchDestinations,
+} from "@/app/lib/api";
 
 export default function Home() {
   const queryClient = useQueryClient(); // 拿到前端的小白板，等一下要讓某一筆作廢
   const [keyword, setKeyword] = useState(""); // 輸入框裡現在打的字
   const [searched, setSearched] = useState(""); // 按下搜尋那一刻的關鍵字
   const [taskFailed, setTaskFailed] = useState(false); // AI 在背景找景點失敗了
+  const [tripId, setTripId] = useState<number | null>(null); // 要加進哪個行程
 
   // 拿 searched 去後端搜尋。等待中、出錯、快取，都交給 TanStack Query 管
   const { data, isFetching, isError } = useQuery({
@@ -54,6 +61,43 @@ export default function Home() {
     return () => es.close();
   }, [taskId, searched, queryClient]);
 
+  // 「加入到哪個行程」的選單要用的行程清單
+  const tripsQuery = useQuery({ queryKey: ["trips"], queryFn: listTrips });
+
+  // 選好的行程，景點池裡已經有哪些景點
+  const poolQuery = useQuery({
+    queryKey: ["tripPlaces", tripId],
+    queryFn: () => listTripPlaces(tripId!), // ! 的意思是「這裡一定不是 null」，下一行保證了
+    enabled: tripId !== null, // 還沒選行程，就不用拿
+  });
+  const inPool = new Set(poolQuery.data?.map((place) => place.id)); // 已經加入的景點 id
+
+  const addPlace = useMutation({
+    mutationFn: (destinationId: number) => addTripPlace(tripId!, destinationId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["tripPlaces", tripId] }),
+  });
+
+  // 每張卡片右下角的按鈕
+  function addButton(destinationId: number) {
+    if (tripId === null) return null; // 還沒選行程，就不顯示
+    if (inPool.has(destinationId)) {
+      return (
+        <span className="text-xs font-semibold text-gray-400">✓ 已加入</span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => addPlace.mutate(destinationId)}
+        disabled={addPlace.isPending}
+        className="shrink-0 rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:bg-gray-400"
+      >
+        加入＋
+      </button>
+    );
+  }
+
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault(); // 表單送出時，瀏覽器預設會重新整理頁面，把它擋掉
     setSearched(keyword.trim());
@@ -79,6 +123,32 @@ export default function Home() {
           {isFetching ? "搜尋中…" : "搜尋"}
         </button>
       </form>
+
+      <div className="mb-6 flex items-center gap-2 text-sm">
+        <span className="text-gray-600">加入到：</span>
+        <select
+          value={tripId ?? ""}
+          onChange={(e) =>
+            setTripId(e.target.value ? Number(e.target.value) : null)
+          }
+          className="rounded-lg border border-gray-300 bg-white px-3 py-1"
+        >
+          <option value="">選一個行程</option>
+          {tripsQuery.data?.map((trip) => (
+            <option key={trip.id} value={trip.id}>
+              {trip.title}
+            </option>
+          ))}
+        </select>
+        {tripsQuery.data?.length === 0 && (
+          <Link href="/trips" className="text-blue-600 hover:underline">
+            先去建立一個行程
+          </Link>
+        )}
+        {addPlace.isError && (
+          <span className="text-red-600">{addPlace.error.message}</span>
+        )}
+      </div>
 
       {isError && (
         <p className="mb-4 rounded-lg bg-red-50 p-3 text-red-600">
@@ -106,7 +176,9 @@ export default function Home() {
           </p>
           <div className="grid gap-4 sm:grid-cols-2">
             {data.destinations.map((d) => (
-              <AttractionCard key={d.id} destination={d} />
+              <AttractionCard key={d.id} destination={d}>
+                {addButton(d.id)}
+              </AttractionCard>
             ))}
           </div>
         </>

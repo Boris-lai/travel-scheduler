@@ -41,6 +41,18 @@ def list_day_itinerary(trip_id: int, day_index: int, db: Session = Depends(get_d
     return day_items(db, trip_id, day_index)
 
 
+@router.get("/api/trips/{trip_id}/itinerary", response_model=list[ItineraryItemOut])
+def list_trip_itinerary(trip_id: int, db: Session = Depends(get_db)):
+    """整個行程每一天的每一站，照第幾天、第幾站排好"""
+    get_trip_or_404(db, trip_id)
+    stmt = (
+        select(ItineraryItem)
+        .where(ItineraryItem.trip_id == trip_id)
+        .order_by(ItineraryItem.day_index, ItineraryItem.position)
+    )
+    return db.scalars(stmt).all()
+
+
 @router.post(
     "/api/trips/{trip_id}/days/{day_index}/itinerary",
     response_model=ItineraryItemOut,
