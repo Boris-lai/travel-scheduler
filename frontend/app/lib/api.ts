@@ -95,3 +95,25 @@ export function removeItineraryItem(tripId: number, itemId: number) {
     method: "DELETE",
   });
 }
+
+// 儲存某一天：這一天的每一站照新的順序排好，每一站帶著自己的時間
+// （後端 schemas/itinerary.py 的 ItineraryDaySave）
+export function saveDayItinerary(
+  tripId: number,
+  day: number,
+  items: ItineraryItem[],
+) {
+  return apiFetch<ItineraryItem[]>(
+    `/api/trips/${tripId}/days/${day}/itinerary`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        items: items.map((item) => ({
+          id: item.id,
+          arrival_time: item.arrival_time,
+          departure_time: item.departure_time,
+        })),
+      }),
+    },
+  );
+}

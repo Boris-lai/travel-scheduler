@@ -1,6 +1,6 @@
 # 第 7 課：編輯頁（拖拉 ＋ 地圖）
 
-> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）⏳ ／ 第 4 段（地圖）⏳ ／ 第 5 段（交通時間、Google 搜尋框）⏳
+> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）✅ ／ 第 4 段（地圖）⏳ ／ 第 5 段（交通時間、Google 搜尋框）⏳
 > **日期**：2026-11-05 ～
 > **對照原專案**：`frontend/app/dashboard/`、`frontend/app/edit/[tripId]/`、`frontend/app/components/edit/`、`frontend/app/hooks/useEditData.ts`、`frontend/app/hooks/useItineraryQueries.ts`、`frontend/app/lib/api.ts`
 
@@ -1380,3 +1380,751 @@ frontend/app/
   - 大阪兩日遊：景點池有金閣寺、平安神宮，按鈕跟著分頁變成「排到第 1 天」「排到第 2 天」。
   - 主控台沒有錯誤。
 - 實驗 8、9 有做：清水寺、二年坂已經從京都三日遊移除。花見小路、伏見稻荷大社的 id 變成 13、14，代表移除過又加回來；之前填的時間都跟著刪掉了，第 3 段會重新填。
+
+---
+
+## 第 3 段：拖拉、時間、儲存
+
+### 開始前的測試結果（2026-11-08）
+
+我先複製一份**你現在的**資料庫和前端來測，把清水寺加回第 1 天湊成 3 站，再用 Chrome 自動操作（介面設成繁體中文，跟你的一樣）：
+
+| 測試 | 結果 |
+|---|---|
+| 按住伏見稻荷的 ⠿，拖到第 1 個 | 順序變了；出現黃色的「第 1 天有變更還沒儲存」；所有 ✕ 都變淡、按不了 |
+| 按「取消」 | 回到原本的順序，黃色提示消失 |
+| 拖成伏見稻荷 → 清水寺 → 花見小路，填時間，按「儲存」 | 黃色提示消失；重新整理頁面，順序和時間都還在 |
+| 清水寺的離開時間改成比抵達早，按「儲存」 | 紅字「第 2 站的離開時間比抵達時間早」，草稿還在；**資料庫完全沒變**（第 6 課的交易） |
+| 時間改好，再按「儲存」 | 成功，紅字消失 |
+| 有草稿時點「第 2 天」 | 跳確認框。按「取消」：留在第 1 天、草稿還在；按「確定」：換過去，草稿丟掉 |
+| 沒有草稿時換天 | 不跳確認框 |
+| 拖起來又放回原位，或只點一下 ⠿ | 不會出現黃色提示 |
+| 有草稿時，景點池的「排到第 N 天」 | 變灰、按不了；取消之後恢復，排進去、刪掉都正常 |
+| 手機寬度（390px）用手指拖 | 可以拖，畫面不會左右超出 |
+| 網路調慢，按「儲存」時錄下畫面順序的每一次變化 | 一直都是新的順序。拿掉 `await` 的版本，會**閃回舊順序大約 0.6 秒**（下面會說明） |
+| 把 `handleDragEnd` 裡的 `setDraft` 拿掉 | 放開之後彈回原位（下面會說明） |
+| 中文 Chrome 的時間框 | 畫面顯示「上午 09:00」「下午 01:00」，送到後端是 `"09:00"`、`"13:00"`。**只打 `0900` 不夠**，上午／下午那格也要選（步驟 18 有填法） |
+
+### 1. 學到的觀念
+
+#### 草稿：先寫在便條紙上，按儲存才謄進手帳
+
+第 6 課講交易時用過一個比喻：先寫在便條紙上，全部確定了才謄進手帳。這一段在**前端**也準備一張便條紙，叫做「草稿」：
+
+```ts
+const [draft, setDraft] = useState<ItineraryItem[] | null>(null);
+const dayItems =
+  draft ?? allItems.filter((item) => item.day_index === activeDay);
+const dirty = draft !== null; // 有沒有還沒儲存的變更
+```
+
+`??` 的意思是「左邊是 `null` 的話，就用右邊」：
+
+| 狀況 | `draft` | 畫面顯示 |
+|---|---|---|
+| 剛打開，還沒改 | `null` | 後端的資料 |
+| 拖了一下、改了時間 | 改過的那份清單 | 草稿 |
+| 按「儲存」成功 | 變回 `null` | 後端的資料（已經是新的了） |
+| 按「取消」 | 變回 `null` | 後端的資料（本來就沒變） |
+
+為什麼不要每拖一下就存一次？
+
+- 拖 5 下就要打 5 次 API；改時間的話，每打一個數字就要存一次。
+- 使用者常常只是想「試排看看」，不滿意要能**取消**。
+- 第 6 課的 `PUT` 本來就是「一整天一次存」：順序和時間一起送，其中一站有錯，全部都不存。
+
+原專案也是「草稿 ＋ 儲存按鈕」。
+
+#### dnd-kit：三個角色
+
+| 角色 | 寫在哪裡 | 做什麼 |
+|---|---|---|
+| `DndContext` | 編輯頁，包住整個清單 | 拖拉的範圍。放開時呼叫 `onDragEnd`，告訴你「誰（`active`）被拖到誰（`over`）的位置」 |
+| `SortableContext` | 編輯頁，包住 `<ol>` | 「這一串可以排序」。`items` 是每一列的名字（這一站的 id），照現在的順序排 |
+| `useSortable` | `SortableStop`，每一列自己呼叫 | 拿到這一列拖拉需要的東西（下表） |
+
+`useSortable({ id: item.id })` 給你的東西：
+
+| 名字 | 交給誰 | 做什麼 |
+|---|---|---|
+| `setNodeRef` | `<li ref={...}>` | 告訴 dnd-kit「被拖著走的是這個 `<li>`」 |
+| `attributes`、`listeners` | 把手 ⠿ | 按住這裡才開始拖（`listeners` 是滑鼠、手指的事件）。只放在把手上，時間框和 ✕ 才點得到 |
+| `transform`、`transition` | `<li style={...}>` | 拖的時候這一列要移多遠，其他列怎麼讓位（動畫） |
+| `isDragging` | `className` | 正在被拖的那一列加上陰影，蓋在其他列上面 |
+
+**最重要的一點：dnd-kit 只管「拖的過程」，不會幫你改資料。**放開之後，它只告訴你 `active.id`（被拖的那一站）和 `over.id`（放到哪一站的位置），新的順序要自己做出來：
+
+```ts
+const from = dayItems.findIndex((item) => item.id === active.id); // 例如 2（第 3 個）
+const to = dayItems.findIndex((item) => item.id === over.id); //     例如 0（第 1 個）
+setDraft(arrayMove(dayItems, from, to)); // [花見, 伏見, 清水] → [清水, 花見, 伏見]
+```
+
+`arrayMove` 是 dnd-kit 附的小工具：把第 `from` 個搬到第 `to` 個，回傳一個**新的陣列**。
+
+如果忘了 `setDraft`，放開之後那一列會**彈回原位**：React 畫的還是原本的順序。我測過，把 `setDraft` 那一行換成 `console.log(from, to)`，主控台印出 `2 0`，畫面彈回去。
+
+#### 改時間：複製一份，只換掉那一站
+
+```ts
+dayItems.map((item) =>
+  item.id === itemId ? { ...item, [field]: value } : item,
+);
+```
+
+- `map` 讓每一站都跑一次：是要改的那一站，就做一份新的（`...item` 複製所有欄位，再用 `[field]: value` 蓋掉其中一個）；不是的話就原封不動。
+- `[field]`：欄位名稱放在變數裡。`field` 是 `"arrival_time"` 就改抵達時間，是 `"departure_time"` 就改離開時間，一行處理兩種。
+- 為什麼不直接寫 `item.arrival_time = value`？React 是看 state **是不是一個新的東西**來決定要不要重畫。直接改舊的那份，React 以為沒變，畫面不會更新。`arrayMove` 回傳新陣列也是同一個原因。
+
+時間框用的是瀏覽器內建的 `<input type="time">`：
+
+- 它的值永遠是 24 小時制，例如 `"13:00"`；但**畫面怎麼顯示，看電腦的語言**。中文的 Chrome 會顯示「下午 01:00」。
+- 後端回的是 `"13:00:00"`（有秒），所以放進時間框之前先 `slice(0, 5)`。
+- 還沒填完（例如上午／下午那格還是 `--`），或是清空了，值都是 `""`，我們存成 `null`。
+
+#### 存檔：先等新資料回來，再丟掉草稿
+
+```ts
+onSuccess: async () => {
+  await queryClient.invalidateQueries({ queryKey: ["itinerary", tripId] });
+  setDraft(null);
+},
+```
+
+`invalidateQueries` 叫 TanStack Query 重抓，前面加 `await` 是**等它重抓完**。順序很重要：
+
+| 時間點 | 有 `await`（我們的寫法） | 沒有 `await` |
+|---|---|---|
+| 按「儲存」 | 畫面：草稿（新順序） | 畫面：草稿（新順序） |
+| `PUT` 成功 | 開始重抓；草稿還在，畫面不變 | 草稿馬上丟掉，畫面改顯示**小白板上還沒更新的資料**（舊順序！） |
+| 重抓完成 | 小白板換成新的，才丟掉草稿；畫面一樣是新順序 | 小白板換成新的，畫面跳回新順序 |
+
+沒有 `await` 的話，畫面會「新 → 舊 → 新」閃一下。我把網路調慢測過，舊順序出現了大約 0.6 秒。在自己電腦上很快，可能看不出來；上線之後網路一慢就很明顯。
+
+另一個好處：`onSuccess` 還沒跑完，`saveDay.isPending` 就一直是 `true`，按鈕一直顯示「儲存中…」，使用者不會重複按。
+
+#### 有草稿時，先鎖住會改到後端的按鈕
+
+有草稿的時候，如果還能按「排到第 N 天」或 ✕，後端的資料就變了，但便條紙（草稿）還是舊的：
+
+- 新排進來的那一站不在草稿裡，畫面上看不到；
+- 按「儲存」時送出去的清單少了一站，後端回 400「要送這一天的每一站，不能多、不能少、不能重複」（第 6 課寫的檢查）。
+
+所以有草稿時，這些按鈕都加上 `disabled`，黃色提示也寫著「儲存或取消之後，才能新增、刪除景點」。換天也一樣：草稿只屬於正在看的那一天，換過去之前先問要不要放棄。
+
+原專案的做法是：有草稿時也能新增、刪除，成功之後再把草稿跟著改。功能比較完整，但要處理很多種情況（例如從景點池移除時，資料庫連帶刪掉的那一站，草稿裡也要刪）。我們先用簡單、不容易出錯的做法。
+
+### 2. 實作步驟
+
+這一段**只改前端**。後端的 `PUT /api/trips/{trip_id}/days/{day_index}/itinerary` 第 6 課收尾時就寫好了。
+
+#### 步驟 13：安裝 dnd-kit
+
+uvicorn 和 `npm run dev` 都可以繼續開著。另外開一個終端機分頁：
+
+```
+cd ~/Desktop/travel-scheduler/frontend
+npm install @dnd-kit/core @dnd-kit/sortable @dnd-kit/utilities
+```
+
+裝好之後，`package.json` 的 `dependencies` 會多出三行（版本跟原專案一樣）：
+
+```json
+"@dnd-kit/core": "^6.3.1",
+"@dnd-kit/sortable": "^10.0.0",
+"@dnd-kit/utilities": "^3.2.2",
+```
+
+| 套件 | 做什麼 |
+|---|---|
+| `@dnd-kit/core` | 拖拉的基本功能（`DndContext`） |
+| `@dnd-kit/sortable` | 排序清單（`SortableContext`、`useSortable`、`arrayMove`） |
+| `@dnd-kit/utilities` | 小工具（`CSS.Translate`：把位移變成 CSS） |
+
+> 裝完會看到 `8 moderate severity vulnerabilities`。這是裝 dnd-kit **之前就有的**，都來自 ESLint 這類開發時才用的工具；正式網站會用到的套件是 0 個（可以用 `npm audit --omit=dev` 確認）。**不要**照它的建議跑 `npm audit fix --force`：它會把 `eslint-config-next` 降到 15 版，跟我們的 Next 16 對不起來。
+
+#### 步驟 14：`app/lib/types.ts` 最下面加上
+
+```ts
+
+// 每一站可以填的兩個時間
+export type TimeField = "arrival_time" | "departure_time";
+```
+
+#### 步驟 15：`app/lib/api.ts` 最下面加上
+
+```ts
+// 儲存某一天：這一天的每一站照新的順序排好，每一站帶著自己的時間
+// （後端 schemas/itinerary.py 的 ItineraryDaySave）
+export function saveDayItinerary(
+  tripId: number,
+  day: number,
+  items: ItineraryItem[],
+) {
+  return apiFetch<ItineraryItem[]>(
+    `/api/trips/${tripId}/days/${day}/itinerary`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        items: items.map((item) => ({
+          id: item.id,
+          arrival_time: item.arrival_time,
+          departure_time: item.departure_time,
+        })),
+      }),
+    },
+  );
+}
+```
+
+`items` 直接收畫面上的每一站，在這裡只挑出後端要的三個欄位。**順序就是陣列的順序**，後端用 `enumerate` 算出每一站的 `position`（第 6 課）。
+
+#### 步驟 16：新增 `app/components/SortableStop.tsx`
+
+每日行程裡的一站，可以拖拉、可以填時間：
+
+```tsx
+"use client";
+
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+
+import type { ItineraryItem, TimeField } from "@/app/lib/types";
+
+type Props = {
+  item: ItineraryItem;
+  index: number; // 在畫面上排第幾個（從 0 開始）。編號用它，不用 position（可能跳號）
+  onTimeChange: (field: TimeField, value: string | null) => void;
+  onRemove: () => void;
+  removeDisabled: boolean;
+};
+
+// 後端回 "09:00:00"，時間輸入框要的是 "09:00"
+function toInputValue(time: string | null) {
+  return time?.slice(0, 5) ?? "";
+}
+
+// 每日行程裡可以拖拉的一站
+export default function SortableStop({
+  item,
+  index,
+  onTimeChange,
+  onRemove,
+  removeDisabled,
+}: Props) {
+  // 跟 dnd-kit 說「這一列可以拖」，名字用這一站的 id
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id });
+
+  return (
+    <li
+      ref={setNodeRef} // 被拖著走的是這個 <li>
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={`flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 ${
+        isDragging ? "relative z-10 shadow-lg" : ""
+      }`}
+    >
+      {/* 把手：只有按住這裡才能拖，時間框和 ✕ 才點得到 */}
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        title="按住拖拉排序"
+        className="cursor-grab touch-none px-1 text-xl text-gray-400 active:cursor-grabbing"
+      >
+        ⠿
+      </button>
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
+        {index + 1}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold">{item.destination.place_name}</p>
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-sm text-gray-500">
+          <input
+            type="time"
+            value={toInputValue(item.arrival_time)}
+            onChange={(e) =>
+              onTimeChange("arrival_time", e.target.value || null)
+            }
+            aria-label="抵達時間"
+            className="rounded border border-gray-300 px-1"
+          />
+          ～
+          <input
+            type="time"
+            value={toInputValue(item.departure_time)}
+            onChange={(e) =>
+              onTimeChange("departure_time", e.target.value || null)
+            }
+            aria-label="離開時間"
+            className="rounded border border-gray-300 px-1"
+          />
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={removeDisabled}
+        title="刪掉這一站"
+        className="px-1 text-gray-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-gray-400"
+      >
+        ✕
+      </button>
+    </li>
+  );
+}
+```
+
+- 第一行 `"use client"`：`useSortable` 是 hook，只能在瀏覽器執行。
+- 時間框改了，它不自己改資料，而是呼叫 `onTimeChange` **告訴編輯頁**；草稿在編輯頁，由編輯頁去改。跟第 2 段卡片的 `children` 一樣：元件只管畫，資料由使用它的頁面決定。
+- `touch-none`：手機上按住把手時，不要讓整頁跟著捲動。
+
+#### 步驟 17：`app/trips/[tripId]/page.tsx`（編輯頁）整個換掉
+
+```tsx
+"use client";
+
+import { closestCenter, DndContext, type DragEndEvent } from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useState } from "react";
+
+import SortableStop from "@/app/components/SortableStop";
+import {
+  addToDay,
+  getTrip,
+  listTripItinerary,
+  listTripPlaces,
+  removeItineraryItem,
+  removeTripPlace,
+  saveDayItinerary,
+} from "@/app/lib/api";
+import type { ItineraryItem, TimeField } from "@/app/lib/types";
+
+// 第 N 天的日期 ＝ 出發日 ＋（N − 1）天。後端沒有存，前端自己算
+function dayDate(startDate: string | null, day: number) {
+  if (!startDate) return "";
+  const date = new Date(`${startDate}T00:00:00`);
+  date.setDate(date.getDate() + day - 1);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+export default function TripEditPage() {
+  // 網址 /trips/1 裡的「1」。資料夾叫 [tripId]，所以這裡就叫 tripId
+  const params = useParams<{ tripId: string }>();
+  const tripId = Number(params.tripId);
+  const queryClient = useQueryClient();
+  const [activeDay, setActiveDay] = useState(1); // 現在看第幾天
+  // 草稿：這一天拖拉、改時間之後，還沒儲存的樣子。null ＝ 沒有改，直接顯示後端的資料
+  const [draft, setDraft] = useState<ItineraryItem[] | null>(null);
+
+  const tripQuery = useQuery({
+    queryKey: ["trip", tripId],
+    queryFn: () => getTrip(tripId),
+    retry: false, // 找不到行程（404）就直接顯示，不要重試
+  });
+  const placesQuery = useQuery({
+    queryKey: ["tripPlaces", tripId],
+    queryFn: () => listTripPlaces(tripId),
+    enabled: tripQuery.isSuccess, // 確定有這個行程，才去拿景點池
+  });
+  // 整個行程每一天的每一站，一次拿回來（才知道每個景點排在第幾天）
+  const itineraryQuery = useQuery({
+    queryKey: ["itinerary", tripId],
+    queryFn: () => listTripItinerary(tripId),
+    enabled: tripQuery.isSuccess,
+  });
+
+  // 改完資料後，景點池和每日行程都作廢重抓，最不容易漏
+  function refresh() {
+    queryClient.invalidateQueries({ queryKey: ["tripPlaces", tripId] });
+    queryClient.invalidateQueries({ queryKey: ["itinerary", tripId] });
+  }
+
+  const addItem = useMutation({
+    mutationFn: (destinationId: number) =>
+      addToDay(tripId, activeDay, destinationId),
+    onSuccess: refresh,
+  });
+  const removeItem = useMutation({
+    mutationFn: (itemId: number) => removeItineraryItem(tripId, itemId),
+    onSuccess: refresh,
+  });
+  const removePlace = useMutation({
+    mutationFn: (destinationId: number) =>
+      removeTripPlace(tripId, destinationId),
+    onSuccess: refresh, // 資料庫會連帶刪掉排好的那一站（CASCADE），所以每日行程也要重抓
+  });
+  const saveDay = useMutation({
+    mutationFn: (items: ItineraryItem[]) =>
+      saveDayItinerary(tripId, activeDay, items),
+    onSuccess: async () => {
+      // 先等新的資料回來，再丟掉草稿；順序反過來的話，畫面會閃一下舊的順序
+      await queryClient.invalidateQueries({ queryKey: ["itinerary", tripId] });
+      setDraft(null);
+    },
+  });
+
+  if (tripQuery.isError) {
+    return (
+      <main className="mx-auto max-w-5xl p-6">
+        <p className="mb-4 text-red-600">{tripQuery.error.message}</p>
+        <Link href="/trips" className="text-blue-600 hover:underline">
+          ← 回我的行程
+        </Link>
+      </main>
+    );
+  }
+
+  const trip = tripQuery.data;
+  if (!trip) {
+    return <main className="mx-auto max-w-5xl p-6 text-gray-500">載入中…</main>;
+  }
+
+  const dayNumbers = Array.from({ length: trip.days }, (_, i) => i + 1); // 例如 [1, 2, 3]
+  const allItems = itineraryQuery.data ?? [];
+  // 這一天的每一站：有草稿就顯示草稿，沒有就顯示後端的資料
+  const dayItems =
+    draft ?? allItems.filter((item) => item.day_index === activeDay);
+  const dirty = draft !== null; // 有沒有還沒儲存的變更
+  // 每個景點排在第幾天：景點 id → 第幾天
+  const scheduledDay = new Map(
+    allItems.map((item) => [item.destination.id, item.day_index]),
+  );
+  const error =
+    addItem.error ?? removeItem.error ?? removePlace.error ?? saveDay.error;
+
+  // 丟掉草稿，回到後端的資料
+  function discardDraft() {
+    setDraft(null);
+    saveDay.reset(); // 上一次儲存失敗的錯誤訊息也一起清掉
+  }
+
+  function changeDay(day: number) {
+    if (day === activeDay) return;
+    if (
+      dirty &&
+      !confirm(`第 ${activeDay} 天的變更還沒儲存，要放棄這些變更嗎？`)
+    ) {
+      return;
+    }
+    discardDraft();
+    setActiveDay(day);
+  }
+
+  // 拖拉放開時：dnd-kit 只告訴我們「誰被拖到誰的位置」，順序要自己改
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return; // 放在原地，或拖到清單外面
+    const from = dayItems.findIndex((item) => item.id === active.id);
+    const to = dayItems.findIndex((item) => item.id === over.id);
+    setDraft(arrayMove(dayItems, from, to)); // 把第 from 個搬到第 to 個，回傳新的陣列
+  }
+
+  function changeTime(itemId: number, field: TimeField, value: string | null) {
+    setDraft(
+      dayItems.map((item) =>
+        item.id === itemId ? { ...item, [field]: value } : item,
+      ),
+    );
+  }
+
+  function handleRemovePlace(destinationId: number, name: string) {
+    const day = scheduledDay.get(destinationId);
+    if (
+      day &&
+      !confirm(
+        `「${name}」已經排在第 ${day} 天，移除後那一站也會一起刪掉。確定嗎？`,
+      )
+    ) {
+      return;
+    }
+    removePlace.mutate(destinationId);
+  }
+
+  return (
+    <main className="mx-auto max-w-5xl p-6">
+      <h1 className="text-3xl font-bold">{trip.title}</h1>
+      <p className="mb-6 text-gray-500">
+        {trip.days} 天{trip.start_date && `・${trip.start_date} 出發`}
+      </p>
+
+      {error && (
+        <p className="mb-4 rounded-lg bg-red-50 p-3 text-red-600">
+          {error.message}
+        </p>
+      )}
+
+      <div className="grid gap-6 md:grid-cols-[1fr_2fr]">
+        {/* 左邊：景點池 */}
+        <section className="rounded-xl bg-white p-5 shadow">
+          <h2 className="mb-3 text-lg font-bold">景點池</h2>
+          {placesQuery.isError && (
+            <p className="text-sm text-red-600">{placesQuery.error.message}</p>
+          )}
+          {placesQuery.data?.length === 0 && (
+            <p className="text-sm text-gray-500">
+              還沒有景點，到
+              <Link href="/" className="text-blue-600 hover:underline">
+                搜尋頁
+              </Link>
+              加入吧
+            </p>
+          )}
+          <ul className="flex flex-col gap-2">
+            {placesQuery.data?.map((place) => (
+              <li
+                key={place.id}
+                className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2"
+              >
+                <div className="flex-1">
+                  <p className="font-semibold">{place.place_name}</p>
+                  <p className="text-xs text-gray-500">{place.city_name}</p>
+                </div>
+                {scheduledDay.has(place.id) ? (
+                  <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-500">
+                    第 {scheduledDay.get(place.id)} 天
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => addItem.mutate(place.id)}
+                    disabled={dirty || addItem.isPending}
+                    className="shrink-0 rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:bg-gray-400"
+                  >
+                    排到第 {activeDay} 天
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleRemovePlace(place.id, place.place_name)}
+                  disabled={dirty}
+                  title="從景點池移除"
+                  className="px-1 text-gray-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-gray-400"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        {/* 右邊：每日行程 */}
+        <section className="rounded-xl bg-white p-5 shadow">
+          <div className="mb-4 flex flex-wrap gap-2">
+            {dayNumbers.map((day) => (
+              <button
+                key={day}
+                type="button"
+                onClick={() => changeDay(day)}
+                className={`rounded-full px-4 py-1 text-sm font-semibold ${
+                  day === activeDay
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+              >
+                第 {day} 天 {dayDate(trip.start_date, day)}
+              </button>
+            ))}
+          </div>
+
+          {/* 有草稿才出現：儲存或取消 */}
+          {dirty && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg bg-amber-50 p-3 text-sm">
+              <div className="flex-1 text-amber-800">
+                <p className="font-semibold">第 {activeDay} 天有變更還沒儲存</p>
+                <p className="text-xs">儲存或取消之後，才能新增、刪除景點</p>
+              </div>
+              <button
+                type="button"
+                onClick={discardDraft}
+                disabled={saveDay.isPending}
+                className="rounded-full px-3 py-1 font-semibold text-gray-600 hover:bg-amber-100"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => saveDay.mutate(dayItems)}
+                disabled={saveDay.isPending}
+                className="rounded-full bg-blue-600 px-4 py-1 font-semibold text-white hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                {saveDay.isPending ? "儲存中…" : "儲存"}
+              </button>
+            </div>
+          )}
+
+          {itineraryQuery.isPending && (
+            <p className="text-sm text-gray-500">載入中…</p>
+          )}
+          {itineraryQuery.isError && (
+            <p className="text-sm text-red-600">
+              {itineraryQuery.error.message}
+            </p>
+          )}
+          {itineraryQuery.isSuccess && dayItems.length === 0 && (
+            <p className="text-sm text-gray-500">
+              這一天還沒有排景點，從左邊的景點池排進來吧
+            </p>
+          )}
+          {/* DndContext：拖拉的範圍，放開時呼叫 handleDragEnd
+              SortableContext：這一串可以排序，順序就是 items 裡 id 的順序 */}
+          <DndContext
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={dayItems.map((item) => item.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <ol className="flex flex-col gap-2">
+                {dayItems.map((item, index) => (
+                  <SortableStop
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    onTimeChange={(field, value) =>
+                      changeTime(item.id, field, value)
+                    }
+                    onRemove={() => removeItem.mutate(item.id)}
+                    removeDisabled={dirty}
+                  />
+                ))}
+              </ol>
+            </SortableContext>
+          </DndContext>
+        </section>
+      </div>
+    </main>
+  );
+}
+```
+
+跟第 2 段比，改了這些：
+
+| 哪裡 | 改了什麼 |
+|---|---|
+| 最上面 | `import` dnd-kit、`SortableStop`、`saveDayItinerary`、兩個型別 |
+| `draft` | 新的 state：草稿 |
+| `saveDay` | 新的 mutation：送 `PUT`，成功之後等重抓完，再丟掉草稿 |
+| `dayItems` | 有草稿就用草稿 |
+| `discardDraft`、`changeDay` | 取消；換天前先問 |
+| `handleDragEnd`、`changeTime` | 拖完、改時間：做出新的清單，放進草稿 |
+| 景點池的按鈕 | 有草稿時 `disabled` |
+| 天數按鈕 | `setActiveDay(day)` 改成 `changeDay(day)` |
+| 黃色提示 | 有草稿才出現：取消、儲存 |
+| 每日行程 | 原本的 `<li>` 搬進 `SortableStop`，外面包上 `DndContext`、`SortableContext` |
+
+#### 步驟 18：測試
+
+確認 uvicorn、`npm run dev` 都在跑，打開**我的行程 → 京都三日遊**。
+
+1. **先湊 3 站**（已經有 3 站可以跳過）：第 1 天現在只有花見小路、伏見稻荷大社。到搜尋頁，「加入到」選京都三日遊，按**音羽山清水寺**的「加入＋」；回到編輯頁，在第 1 天按清水寺的「排到第 1 天」。
+2. **拖拉**：按住伏見稻荷大社左邊的 ⠿，往上拖到第 1 個再放開 → 編號變成 1 伏見稻荷大社、2 花見小路、3 音羽山清水寺；上面出現黃色的「第 1 天有變更還沒儲存」；所有 ✕ 都變淡、按不了。
+3. 按「**取消**」→ 回到原本的順序，黃色提示消失。
+4. **排回第 6 課的樣子**：拖成「伏見稻荷大社 → 音羽山清水寺 → 花見小路」，再填時間：伏見稻荷 09:00～10:30、清水寺 11:00～12:00、花見小路 13:00。
+
+   > **中文 Chrome 的時間框怎麼填**：它會顯示「上午／下午 時:分」三格，**三格都要有值才算數**。
+   > - 最簡單：點右邊的時鐘圖示，用選的（上午／下午也要選）。
+   > - 用打的：點最左邊那格，按 **↑ 是上午、↓ 是下午**，再按 **→** 打 4 個數字，例如 `0900`。
+   > - 下午的時間可以直接點冒號**左邊**的「時」打 24 小時制，例如 `1300` 會自動變成「下午 01:00」。
+   > - 只打 `0900`、上午／下午那格還是 `--` 的話，畫面看起來有數字，但**值是空的**，存不進去。
+
+5. 按「**儲存**」→ 黃色提示消失。按 **F5** 重新整理 → 順序和時間都還在（真的存進資料庫了）。
+6. **實驗：存檔失敗**。把清水寺的離開時間改成 10:00（比抵達的 11:00 早）→ 儲存 → 紅字「第 2 站的離開時間比抵達時間早」，黃色提示和你填的 10:00 都還在。改回 12:00 → 儲存 → 成功，紅字消失。
+7. **實驗：換天**。隨便拖一下 → 點「第 2 天」→ 跳出確認框 → 按「取消」：還在第 1 天，草稿還在 → 再點一次「第 2 天」，按「確定」：換過去了 → 回到第 1 天：是第 5 點存好的順序，剛剛拖的被丟掉了。
+8. **實驗（想多看懂的話）：為什麼要 `await`**。
+   1. Chrome 按 F12 打開開發者工具 → **Network** 分頁 → 上方「Disable cache」旁邊的下拉選單，從「No throttling」改成「**3G**」，讓網路變慢（中文介面的字可能不太一樣）。
+   2. 把 `saveDay` 裡 `await queryClient...` 的 `await` 刪掉，存檔。
+   3. 拖一下 → 儲存 → 會看到順序**閃回舊的**一陣子，才跳回新的。
+   4. 把 `await` 加回去，再試一次 → 不會閃了。
+   5. **記得把「3G」改回「No throttling」。**
+9. **實驗（想多看懂的話）：dnd-kit 不會幫你改資料**。把 `handleDragEnd` 最後一行 `setDraft(arrayMove(dayItems, from, to));` 換成 `console.log(from, to);`，存檔 → 拖一下 → 放開後**彈回原位**，主控台（F12 → Console）印出兩個數字，例如 `2 0`。看完改回來。
+
+### 3. 這一段結束後的資料夾
+
+```
+frontend/
+├── package.json             ← 改：多了 3 個 @dnd-kit 套件（npm install 自動改的，package-lock.json 也是）
+└── app/
+    ├── components/
+    │   └── SortableStop.tsx ← 新增：可以拖拉的一站
+    ├── lib/
+    │   ├── api.ts           ← 改：加上 saveDayItinerary
+    │   └── types.ts         ← 改：加上 TimeField
+    └── trips/[tripId]/
+        └── page.tsx         ← 改：草稿、拖拉、儲存
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 拖拉套件 | `@dnd-kit/core`、`sortable`、`utilities` | 一樣，版本也一樣 |
+| 怎麼開始拖 | `MouseSensor`（滑鼠移動 8px 才開始）＋ `TouchSensor`（手指按住 50 毫秒） | 用 dnd-kit 預設的（滑鼠、手指都可以）。只有把手能拖，不怕誤觸 |
+| 拖拉元件 | `SortableRow`：用「函式當 children」把 `listeners` 傳出去 | `SortableStop`：自己畫整列，`listeners` 直接放在把手上 |
+| 草稿 | 每一天各一份，順序、時間、交通方式分開存（3 個 state ＋ 一個「哪幾天有改」的表） | 只有正在看的那一天一份，整份清單（順序和時間一起） |
+| 換天時有草稿 | 自動儲存 | 問要不要放棄 |
+| 有草稿時新增、刪除 | 可以，成功之後把草稿跟著改 | 先鎖住，儲存或取消之後才能按 |
+| 時間輸入 | 自己做的 `TimePopover`：時、分兩排選項，5 分鐘一格，24 小時制 | 瀏覽器內建 `<input type="time">`，顯示方式跟著電腦語言。第 9 課美化時可以換成自己做的 |
+| 儲存的 API | `PUT .../itinerary/save`，順序和時間分兩份送 | `PUT .../itinerary`，一份清單，每一站帶著自己的時間（第 6 課） |
+| 儲存成功之後 | 草稿留著，只把「有變更」的標記清掉 | 等重抓完成，再把草稿丟掉 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| `Module not found: Can't resolve '@dnd-kit/core'` | 沒裝，或裝在錯的資料夾（要在 `frontend` 裡面裝） | 對照步驟 13。裝了還是一樣，就把 `npm run dev` 停掉（Ctrl+C）再開一次 |
+| 放開之後彈回原位 | `handleDragEnd` 沒有 `setDraft`，或 `DndContext` 沒寫 `onDragEnd={handleDragEnd}` | 對照步驟 17 |
+| 按住 ⠿ 拖不動 | 把手上沒有 `{...listeners}`，或 `<li>` 沒有 `ref={setNodeRef}` | 對照步驟 16 |
+| 手機上按住把手，整頁跟著捲動 | 把手少了 `touch-none` | 對照步驟 16 |
+| 時間框打了 `0900`，存完還是空的 | 上午／下午那格還是 `--`，值不算數 | 步驟 18 第 4 點的填法 |
+| 紅字「要送這一天的每一站，不能多、不能少、不能重複」 | 草稿是舊的，例如在另一個分頁改過這一天 | 按「取消」，重新整理 |
+| 主控台有紅字 `Failed to load resource: ... 400 (Bad Request)` | 存檔失敗時（例如時間顛倒）瀏覽器自己印的，不是程式壞掉 | 看畫面上的紅字訊息 |
+| 存檔時畫面閃一下舊的順序 | `onSuccess` 少了 `await`，或 `setDraft(null)` 寫在 `await` 前面 | 先 `await` 重抓，再 `setDraft(null)` |
+| 重新整理之後，拖好的順序不見了 | 還沒按「儲存」。草稿只存在這一頁的記憶體裡（`useState`） | 先按「儲存」 |
+
+### 📌 這一段的 3 個重點
+
+1. **草稿是前端的便條紙**：`draft ?? 後端的資料`。按「儲存」才送 `PUT`，按「取消」就丟掉。
+2. **dnd-kit 只管拖的過程**：放開之後，新的順序要自己 `setDraft(arrayMove(...))`。
+3. **存檔時先 `await` 重抓，再丟草稿**，畫面才不會閃回舊的。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 為什麼不要每拖一次就打一次 API，而是做一份草稿、按「儲存」才送？
+2. 把 `handleDragEnd` 裡的 `setDraft(arrayMove(dayItems, from, to))` 拿掉，放開之後會怎樣？為什麼？
+3. 改時間為什麼要寫 `{ ...item, [field]: value }` 做一份新的，不直接寫 `item.arrival_time = value`？
+4. 有草稿的時候，為什麼要把「排到第 N 天」鎖起來？不鎖的話會發生什麼事？
+
+<details>
+<summary>點開看解答</summary>
+
+1. 每拖一次就存，拖 5 下要打 5 次 API，改時間更是每打一個數字就存一次；而且使用者常常只是試排看看，存了就沒辦法「取消」。第 6 課的 `PUT` 也是設計成「一整天一次存」：順序和時間一起送，一站有錯就全部不存。草稿讓使用者慢慢改，確定了才一次寫進資料庫。
+2. 會彈回原位。dnd-kit 只負責「拖的過程」的畫面（那一列跟著滑鼠移動、其他列讓位），放開之後它只告訴你 `active.id` 和 `over.id`，不會改任何資料。沒有 `setDraft`，`dayItems` 還是原本的順序，React 就照原本的順序畫回去。
+3. React 是看 state **是不是一個新的東西**來決定要不要重畫。直接改 `item.arrival_time`，改的是原本那一份，React 拿到的還是同一個東西，以為沒變，畫面就不會更新。而且那一份可能就是 TanStack Query 小白板上的資料，直接改等於偷偷改了快取，取消也回不去。
+4. 按了「排到第 N 天」，後端多了一站，但草稿（便條紙）還是舊的：新的那一站畫面上看不到；按「儲存」時，送出去的清單少了一站，後端會回 400「要送這一天的每一站，不能多、不能少、不能重複」。鎖起來，就不會出現「後端和草稿對不起來」的情況。
+
+</details>
+
+#### 你的實作紀錄（2026-11-09）
+
+- 4 個檔案（`types.ts`、`api.ts`、`SortableStop.tsx`、編輯頁）都跟教材**逐字一樣**，連排版都相同。`api.ts` 只多了最後那段，前面沒動到。
+- dnd-kit 裝的版本是 core 6.3.1、sortable 10.0.0、utilities 3.2.2，`package-lock.json` 也一起更新了。型別檢查、lint 都通過。
+- 你的資料庫：京都三日遊第 1 天是伏見稻荷大社 09:00～10:30 → 音羽山清水寺 11:00～12:00 → 花見小路 13:00，**跟第 6 課排的一樣**，表示拖拉、填時間、儲存都成功了。
+- 用 Chrome 對你的畫面測（拖一下再按取消，沒有儲存，沒動到資料庫）：拖完出現黃色提示、所有 ✕ 和「排到第 N 天」都鎖住；有草稿時點第 2 天會跳確認框；按取消回到原本的順序。主控台沒有錯誤。
+- 景點池現在是花見小路、伏見稻荷大社、二年坂及三年坂、音羽山清水寺。**八坂神社不在了**，所以第 2 天是空的。

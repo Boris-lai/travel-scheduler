@@ -40,3 +40,6 @@ export type ItineraryItem = {
   departure_time: string | null;
   destination: Destination; // 這一站是哪個景點
 };
+
+// 每一站可以填的兩個時間
+export type TimeField = "arrival_time" | "departure_time";
