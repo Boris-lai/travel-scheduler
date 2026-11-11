@@ -12,6 +12,8 @@ import { useParams } from "next/navigation";
 import { useState } from "react";
 
 import SortableStop from "@/app/components/SortableStop";
+import TripMap from "@/app/components/TripMap";
+
 import {
   addToDay,
   getTrip,
@@ -315,6 +317,11 @@ export default function TripEditPage() {
               </ol>
             </SortableContext>
           </DndContext>
+
+          {/* 地圖跟清單用同一份 dayItems：拖拉、換天，地圖都會跟著變 */}
+          <div className="mt-4">
+            <TripMap day={activeDay} items={dayItems} />
+          </div>
         </section>
       </div>
     </main>

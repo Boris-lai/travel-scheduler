@@ -1,6 +1,6 @@
 # 第 7 課：編輯頁（拖拉 ＋ 地圖）
 
-> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）✅ ／ 第 4 段（地圖）⏳ ／ 第 5 段（交通時間、Google 搜尋框）⏳
+> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）✅ ／ 第 4 段（地圖）✅ ／ 第 5 段（交通時間、Google 搜尋框）⏳
 > **日期**：2026-11-05 ～
 > **對照原專案**：`frontend/app/dashboard/`、`frontend/app/edit/[tripId]/`、`frontend/app/components/edit/`、`frontend/app/hooks/useEditData.ts`、`frontend/app/hooks/useItineraryQueries.ts`、`frontend/app/lib/api.ts`
 
@@ -2128,3 +2128,449 @@ frontend/
 - 你的資料庫：京都三日遊第 1 天是伏見稻荷大社 09:00～10:30 → 音羽山清水寺 11:00～12:00 → 花見小路 13:00，**跟第 6 課排的一樣**，表示拖拉、填時間、儲存都成功了。
 - 用 Chrome 對你的畫面測（拖一下再按取消，沒有儲存，沒動到資料庫）：拖完出現黃色提示、所有 ✕ 和「排到第 N 天」都鎖住；有草稿時點第 2 天會跳確認框；按取消回到原本的順序。主控台沒有錯誤。
 - 景點池現在是花見小路、伏見稻荷大社、二年坂及三年坂、音羽山清水寺。**八坂神社不在了**，所以第 2 天是空的。
+
+---
+
+## 第 4 段：地圖
+
+### 開始前的測試結果（2026-11-10）
+
+我先複製一份**你現在的**資料庫和前端來測（第 1 天伏見稻荷 → 清水寺 → 花見小路，第 2 天八坂神社）。測試時**沒有用任何金鑰**：Google 地圖沒有金鑰也會載入，只是畫面變暗、跳出「這個網頁無法正確載入 Google 地圖」，但圖釘、連線、縮放都照常運作，拿來測程式剛好。你用自己的金鑰就不會有這些。
+
+| 測試 | 結果 |
+|---|---|
+| 還沒設定金鑰 | 地圖的位置顯示「還沒設定 Google 地圖金鑰……」，頁面其他地方正常 |
+| 打開京都三日遊第 1 天 | 3 根藍色圖釘，編號 1、2、3 跟清單一樣；照順序連成一條線；3 根都在畫面裡 |
+| 把花見小路拖到第 1 個（還沒儲存） | 圖釘編號馬上變成花見 1、伏見 2、清水 3，線也照新順序；地圖沒有跳 |
+| 按「取消」 | 編號和線都變回來 |
+| 自己移動地圖之後，改一個時間 | 地圖停在你移動的位置，沒有跳回去 |
+| 換到第 2 天（只有八坂神社） | 地圖移到八坂神社、放大；只有一站，所以沒有線 |
+| 換到第 3 天（空的） | 沒有圖釘，地圖停在原地 |
+| 回到第 1 天 | 縮放回 3 站的範圍 |
+| 二年坂排進第 1 天，再刪掉 | 多一根 4 號圖釘、線接過去；刪掉之後回到 3 根 |
+| 離開編輯頁 | 線被清乾淨，沒有留在記憶體裡 |
+| 手機寬度（390px） | 地圖在清單下面，畫面不會左右超出 |
+| 拿掉 `useEffect` 的 cleanup（`return () => line.setMap(null)`） | 拖兩下之後，**舊的線都還留在地圖上**，疊成一堆（下面會說明） |
+
+### 1. 學到的觀念
+
+#### 前端的金鑰，大家都看得到
+
+後端 `.env` 裡已經有一把 Google 金鑰（`MAPS_API_KEY`），第 3 課用來查景點的座標。那把只在後端用，**瀏覽器看不到**。
+
+地圖不一樣：地圖是在**瀏覽器**裡畫的，瀏覽器要自己跟 Google 拿地圖，所以金鑰一定要送到瀏覽器。
+
+| | 後端的金鑰 | 地圖的金鑰 |
+|---|---|---|
+| 放在哪 | `backend/.env` | `frontend/.env.local` |
+| 名字 | `MAPS_API_KEY` | `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` |
+| 誰看得到 | 只有後端 | **所有打開網頁的人**（F12 就看得到） |
+| 怎麼保護 | 不外流 | 鎖住：只能從我們的網址用、只能用地圖這個 API |
+
+Next.js 的規則：`.env.local` 裡 **`NEXT_PUBLIC_` 開頭的變數，會被直接寫進送到瀏覽器的程式**；沒有這個開頭的，只有伺服器看得到。
+
+所以要**另外申請一把**、而且一定要加上限制。別人就算從網頁裡複製走，換到他的網站也用不了，也不能拿去查景點、算路線。**千萬不要**把後端那把加上 `NEXT_PUBLIC_` 放進前端：它沒有這些限制，被拿走就能用你的帳單呼叫各種 API。
+
+Google 也是這樣設計的：地圖金鑰本來就會出現在網頁裡，靠限制來保護。
+
+#### `@vis.gl/react-google-maps`：把地圖寫成 React 元件
+
+Google 地圖原本的寫法，是自己 `new google.maps.Map(...)`、`new Marker(...)`，資料變了還要自己把舊的圖釘一根一根拿掉。原專案就是這樣寫的（`TripMap.tsx` 有 400 多行）。
+
+這一段改用 Google 贊助的 React 套件 `@vis.gl/react-google-maps`，可以這樣寫：
+
+```tsx
+<APIProvider apiKey={API_KEY}>       {/* 載入 Google 地圖的程式（只會載一次） */}
+  <GoogleMap mapId="DEMO_MAP_ID" ...>  {/* 一張地圖 */}
+    <AdvancedMarker position={...}>   {/* 一根圖釘 */}
+      <Pin glyph="1" ... />           {/* 圖釘的樣子：藍色、寫著 1 */}
+    </AdvancedMarker>
+  </GoogleMap>
+</APIProvider>
+```
+
+圖釘跟清單一樣用 `stops.map(...)` 畫出來，**資料變了，圖釘自己跟著變**，不用手動清掉舊的。這就是 React 的好處。
+
+`mapId="DEMO_MAP_ID"`：新版圖釘（`AdvancedMarker`）一定要有地圖 ID。`DEMO_MAP_ID` 是 Google 給開發測試用的，原專案也是用它。
+
+`Map as GoogleMap`：套件裡的元件叫 `Map`，跟 JavaScript 內建的 `Map`（第 2 段 `scheduledDay` 用的那個）同名，所以 import 時改個名字，比較不會搞混。
+
+#### 不是 React 元件的東西：`useMap` ＋ `useEffect`
+
+這個套件沒有「線」的元件，「把每一站縮放進畫面」也不是畫面，而是**對地圖下指令**。這種時候：
+
+1. 用 `useMap()` 拿到外面那張地圖（還沒載入好的時候是 `null`）。
+2. 在 `useEffect` 裡自己 `new google.maps.Polyline(...)` 畫線。
+3. **`return` 一個 cleanup 函式，把線擦掉。**
+
+```tsx
+useEffect(() => {
+  if (!map || path.length < 2) return;
+  const line = new google.maps.Polyline({ map, path, ... });
+  return () => line.setMap(null); // 下次重畫之前，先擦掉這一條
+}, [map, path]);
+```
+
+`path` 一變（拖拉、換天），React 會**先執行上一次的 cleanup**（擦掉舊的線），**再執行新的 effect**（畫新的線）。少了 cleanup，舊的線就永遠留在地圖上。我測過：拖兩下，地圖上就疊了好幾條不同順序的線。
+
+第 5 課的 SSE 也是同一個道理：`useEffect` 裡打開 `EventSource`，cleanup 裡 `close()`。**在 effect 裡建立的東西，cleanup 要負責收掉。**
+
+#### 什麼時候縮放：用 `useRef` 記住上一次
+
+「把每一站都放進畫面」（`fitBounds`）如果每次重畫都做，會很煩：你自己把地圖拖到旁邊看看，改個時間，地圖就跳回去了。
+
+所以只在**換天、多一站或少一站**的時候縮放：
+
+```tsx
+const fittedKey = useRef(""); // 上一次縮放時是「第幾天:幾站」，例如 "1:3"
+
+useEffect(() => {
+  const key = `${day}:${path.length}`;
+  if (!map || path.length === 0 || fittedKey.current === key) return; // 一樣就不縮放
+  fittedKey.current = key;
+  // ……縮放……
+}, [map, day, path]);
+```
+
+為什麼用 `useRef`，不用 `useState`？
+
+| | `useState` | `useRef` |
+|---|---|---|
+| 改了之後 | 畫面重畫 | **不會**重畫 |
+| 適合放 | 畫面要顯示的東西 | 只是「記住一件事」，畫面用不到 |
+
+「上一次縮放的是哪一天」畫面用不到，只是讓 effect 自己判斷，所以用 `useRef`。用 `useState` 的話，每次記錄都會多重畫一次，沒有必要。
+
+#### 地圖和清單用同一份資料
+
+```tsx
+<TripMap day={activeDay} items={dayItems} />
+```
+
+`dayItems` 就是第 3 段那個「有草稿就用草稿」的清單。所以**拖拉之後還沒儲存，地圖上的編號和線就已經變了**，按「取消」又變回來。不用多寫任何程式，這就是「畫面只是資料的樣子」：同一份資料，清單畫一次，地圖畫一次。
+
+### 2. 實作步驟
+
+這一段**只改前端**，但要先去 Google 申請金鑰。
+
+#### 步驟 19：申請瀏覽器用的 Google 金鑰
+
+1. 打開 [Google Cloud 主控台](https://console.cloud.google.com/)，上方選**後端那把金鑰所在的專案**。
+2. **開啟 Maps JavaScript API**：左上角選單 →「API 和服務」→「程式庫」→ 搜尋 **Maps JavaScript API** → 按「啟用」。
+3. **建立金鑰**：「API 和服務」→「憑證」→ 上方「＋ 建立憑證」→「API 金鑰」。
+4. **加上限制**（很重要，建立的視窗裡或建立之後按「編輯」都可以設定）：
+   - 名稱：例如 `travel-scheduler 瀏覽器地圖`
+   - 應用程式限制：選「**網站**」，新增 `http://localhost:3000/*`
+   - API 限制：選「**限制金鑰**」，只勾 **Maps JavaScript API**
+   - 按「儲存」
+5. 複製這把金鑰。
+
+> - 限制設定好之後，可能要等幾分鐘才會生效。
+> - 如果要求設定帳單：後端用的 Places API 也需要帳單，所以同一個專案應該已經設好了。地圖每個月有免費額度，自己開發測試用不完。
+> - 第 10 課上線時，要在「網站」限制裡再加上正式的網址。
+
+#### 步驟 20：把金鑰放進 `frontend/.env.local`
+
+在 VS Code 的 `frontend` 資料夾裡**新增檔案** `.env.local`（注意開頭有一個點），內容只有一行，`=` 後面貼上你的金鑰：
+
+```
+NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=貼上你的金鑰
+```
+
+`=` 前後不要有空格，也不用加引號。
+
+存檔之後，**確認它不會被 git 收進去**：
+
+```
+cd ~/Desktop/travel-scheduler
+git status --short
+git check-ignore -v frontend/.env.local
+```
+
+- `git status` 裡**不應該**出現 `.env.local`。
+- `git check-ignore` 應該印出 `frontend/.gitignore:34:.env*	frontend/.env.local`，意思是「被 `frontend/.gitignore` 第 34 行的 `.env*` 擋掉了」。這行是建立 Next.js 專案時就有的。
+
+`npm run dev` 的終端機會出現 `Reload env: .env.local`，表示 Next.js 自己讀到了。
+
+#### 步驟 21：安裝地圖套件
+
+```
+cd ~/Desktop/travel-scheduler/frontend
+npm install @vis.gl/react-google-maps
+```
+
+`package.json` 的 `dependencies` 會多一行 `"@vis.gl/react-google-maps": "^1.10.2"`。它會順便裝好 Google 地圖的型別（`@types/google.maps`），所以 `google.maps.Polyline` 這些，TypeScript 都認得。
+
+> 最後的 `vulnerabilities` 數字可能跟上次不太一樣，一樣是開發工具的，不用理它，也**不要**跑 `npm audit fix --force`。
+
+#### 步驟 22：`app/lib/types.ts` 的 `Destination` 加上座標
+
+在 `Destination` 的 `geo_tags` 下面加兩行：
+
+```ts
+export type Destination = {
+  id: number;
+  place_name: string;
+  city_name: string | null;
+  description: string | null;
+  geo_tags: string | null;
+  lat: number | null; // 緯度，地圖插針用
+  lng: number | null; // 經度
+};
+```
+
+後端本來就有回 `lat`、`lng`（第 3 課存的），只是前端之前用不到，型別沒寫。後端的欄位可以是空的，所以是 `number | null`。
+
+#### 步驟 23：新增 `app/components/TripMap.tsx`
+
+```tsx
+"use client";
+
+import {
+  AdvancedMarker,
+  APIProvider,
+  Map as GoogleMap, // 改個名字，免得跟 JavaScript 內建的 Map 搞混
+  Pin,
+  useMap,
+} from "@vis.gl/react-google-maps";
+import { useEffect, useRef } from "react";
+
+import type { ItineraryItem } from "@/app/lib/types";
+
+// 瀏覽器用的金鑰，放在 frontend/.env.local。NEXT_PUBLIC_ 開頭的才會送到瀏覽器
+const API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+
+type LatLng = { lat: number; lng: number };
+
+type Stop = {
+  id: number;
+  name: string;
+  number: number; // 第幾站，跟清單上的編號一樣
+  position: LatLng;
+};
+
+type Props = {
+  day: number;
+  items: ItineraryItem[]; // 這一天的每一站，照順序（有草稿就是草稿）
+};
+
+export default function TripMap({ day, items }: Props) {
+  if (!API_KEY) {
+    return (
+      <p className="rounded-lg bg-gray-100 p-4 text-sm text-gray-500">
+        還沒設定 Google 地圖金鑰：在 frontend/.env.local 加上
+        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY，再重新啟動 npm run dev
+      </p>
+    );
+  }
+
+  // 有座標的站才畫得出來
+  const stops: Stop[] = [];
+  items.forEach((item, index) => {
+    const { lat, lng } = item.destination;
+    if (lat === null || lng === null) return;
+    stops.push({
+      id: item.id,
+      name: item.destination.place_name,
+      number: index + 1,
+      position: { lat, lng },
+    });
+  });
+  const path = stops.map((stop) => stop.position); // 照順序的座標，拿來連線、縮放
+
+  return (
+    <APIProvider apiKey={API_KEY}>
+      <GoogleMap
+        mapId="DEMO_MAP_ID" // 新版圖釘一定要有；DEMO_MAP_ID 是 Google 給開發測試用的
+        defaultCenter={{ lat: 25.033, lng: 121.5654 }} // 這一天還沒排景點時，先顯示台北
+        defaultZoom={12}
+        gestureHandling="greedy" // 手機上一根手指就能拖地圖
+        disableDefaultUI // 不要街景小人、衛星切換那些按鈕
+        className="h-96 w-full overflow-hidden rounded-lg"
+      >
+        {stops.map((stop) => (
+          <AdvancedMarker
+            key={stop.id}
+            position={stop.position}
+            title={stop.name}
+          >
+            <Pin
+              background="#2563eb"
+              borderColor="#1e40af"
+              glyphColor="#ffffff"
+              glyph={String(stop.number)}
+            />
+          </AdvancedMarker>
+        ))}
+        <RouteLine path={path} />
+        <FitToStops day={day} path={path} />
+      </GoogleMap>
+    </APIProvider>
+  );
+}
+
+// 照順序把每一站連起來。Google 的線不是 React 元件，所以在 useEffect 裡自己畫、自己擦
+function RouteLine({ path }: { path: LatLng[] }) {
+  const map = useMap(); // 外面那張地圖；還沒載入好的時候是 null
+
+  useEffect(() => {
+    if (!map || path.length < 2) return;
+    const line = new google.maps.Polyline({
+      map,
+      path,
+      strokeColor: "#2563eb",
+      strokeOpacity: 0.7,
+      strokeWeight: 4,
+    });
+    return () => line.setMap(null); // 下次重畫之前、或離開頁面時，先把舊的線擦掉
+  }, [map, path]);
+
+  return null; // 線畫在地圖上，這個元件本身不用畫任何 HTML
+}
+
+// 換天、多一站或少一站時，把這一天的每一站都放進畫面
+// （只拖拉順序、改時間的話，地圖不會跳來跳去）
+function FitToStops({ day, path }: { day: number; path: LatLng[] }) {
+  const map = useMap();
+  const fittedKey = useRef(""); // 上一次縮放時是「第幾天:幾站」
+
+  useEffect(() => {
+    const key = `${day}:${path.length}`;
+    if (!map || path.length === 0 || fittedKey.current === key) return;
+    fittedKey.current = key;
+
+    if (path.length === 1) {
+      map.setCenter(path[0]); // 只有一站：放在正中間
+      map.setZoom(15);
+      return;
+    }
+    const bounds = new google.maps.LatLngBounds();
+    path.forEach((point) => bounds.extend(point));
+    map.fitBounds(bounds, 50); // 每一站都放進畫面，四周留 50px
+  }, [map, day, path]);
+
+  return null;
+}
+```
+
+- 一個檔案裡有 3 個元件：`TripMap` 是主角（`export default`，給編輯頁用）；`RouteLine`、`FitToStops` 是它自己用的小幫手，沒有 `export`。
+- `RouteLine`、`FitToStops` **一定要放在 `<GoogleMap>` 裡面**，`useMap()` 才拿得到那張地圖。它們 `return null`，因為不用畫任何 HTML，只是對地圖下指令。
+- `stops` 用 `forEach` 一站一站檢查座標：沒有座標的跳過。`number` 用清單裡的順序 `index + 1`，所以就算中間有一站沒座標，地圖的編號還是跟清單對得起來。
+
+#### 步驟 24：`app/trips/[tripId]/page.tsx` 加上地圖
+
+這一段的編輯頁**只加兩個地方**，不用整個換掉。
+
+**① 最上面**，`import SortableStop` 那行的下面加一行：
+
+```tsx
+import SortableStop from "@/app/components/SortableStop";
+import TripMap from "@/app/components/TripMap";
+```
+
+**② 最下面**，`</DndContext>` 和 `</section>` 中間，加上地圖：
+
+```tsx
+            </SortableContext>
+          </DndContext>
+
+          {/* 地圖跟清單用同一份 dayItems：拖拉、換天，地圖都會跟著變 */}
+          <div className="mt-4">
+            <TripMap day={activeDay} items={dayItems} />
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+```
+
+#### 步驟 25：測試
+
+確認 uvicorn、`npm run dev` 都在跑，打開**我的行程 → 京都三日遊**。
+
+1. **第 1 天**：每日行程下面出現地圖。伏見稻荷（1）、清水寺（2）、花見小路（3）三根藍色圖釘，照順序連成一條線，三根都在畫面裡。
+2. **拖拉**：把花見小路拖到第 1 個 → **還沒按儲存**，地圖上的編號就變成花見 1、伏見 2、清水 3，線也照新的順序；地圖不會跳。按「取消」→ 變回來。
+3. **自己動地圖**：用滑鼠拖動、滾輪縮放地圖 → 改一個時間 → 地圖停在你動過的位置，不會跳回去。按「取消」。
+4. **換天**：點第 2 天 → 地圖移到八坂神社，放大在正中間；只有一站，所以沒有線。點第 3 天（空的）→ 沒有圖釘，地圖停在原地。回到第 1 天 → 縮放回三站的範圍。
+5. **新增、刪除**：景點池裡二年坂按「排到第 1 天」→ 多一根 4 號圖釘，線接過去。再按那一站的 ✕ → 回到三根。
+6. **實驗（想多看懂的話）：拿掉 cleanup**。把 `RouteLine` 裡 `return () => line.setMap(null);` 那一行刪掉，存檔 → 拖幾下 → 舊的線都還留在地圖上，疊成一堆。看完把那一行加回來，重新整理頁面。
+
+如果地圖變暗、跳出「這個網頁無法正確載入 Google 地圖」，就是金鑰有問題。按 F12 看 Console 的紅字，對照下面的「常見踩雷」。
+
+### 3. 這一段結束後的資料夾
+
+```
+frontend/
+├── .env.local               ← 新增：地圖的金鑰（不會進 git）
+├── package.json             ← 改：多了 @vis.gl/react-google-maps
+└── app/
+    ├── components/
+    │   └── TripMap.tsx      ← 新增：地圖（圖釘、連線、縮放）
+    ├── lib/
+    │   └── types.ts         ← 改：Destination 加上 lat、lng
+    └── trips/[tripId]/
+        └── page.tsx         ← 改：放上地圖
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 地圖套件 | `@googlemaps/js-api-loader`，自己 `new google.maps.Map`、手動清掉舊的圖釘 | `@vis.gl/react-google-maps`（底層也是那個 loader），圖釘寫成 React 元件 |
+| 地圖上有哪些圖釘 | 正在看的那一天（那一天的顏色、照順序編號）＋ 景點池裡**還沒排**的景點（預設的紅色圖釘）；其他天的圖釘藏起來 | 只有**正在看的那一天**，藍色、照順序編號 |
+| 線 | 每一天不同顏色，線上有箭頭 | 藍色的線（顏色、箭頭留到第 9 課美化） |
+| 什麼時候縮放 | 第一次打開（整個景點池都放進畫面）、換天 | 換天、多一站或少一站（用 `useRef` 記住「第幾天:幾站」） |
+| 換到空的一天 | 停在原地 | 停在原地 |
+| 還沒有任何景點時 | 用行程的城市名稱查座標，移過去 | 先顯示台北 |
+| 加入任意景點 | 點地圖上的景點、或用 Google 搜尋框，跳出介紹視窗，可以直接加入景點池 | 第 5 段做「用 Google 搜尋框加景點」 |
+| 金鑰的變數名稱 | `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` | 一樣 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| 地圖的位置顯示「還沒設定 Google 地圖金鑰……」 | 沒有 `frontend/.env.local`、變數名稱打錯，或放在 `backend` 裡 | 對照步驟 20。終端機沒出現 `Reload env`，就把 `npm run dev` 停掉再開 |
+| 地圖變暗、跳出「這個網頁無法正確載入 Google 地圖」，Console 是 `ApiNotActivatedMapError` | 專案沒有啟用 Maps JavaScript API | 步驟 19 第 2 點 |
+| 同上，Console 是 `RefererNotAllowedMapError` | 「網站」限制沒有 `http://localhost:3000/*`，或剛設定還沒生效 | 檢查限制，等幾分鐘 |
+| 同上，Console 是 `ApiTargetBlockedMapError` | 「API 限制」沒有勾 Maps JavaScript API | 步驟 19 第 4 點 |
+| 同上，Console 是 `InvalidKeyMapError` | 金鑰貼錯（多了空格、引號，或少複製一段） | 重新複製貼上 |
+| 同上，Console 是 `BillingNotEnabledMapError` | 專案沒有開帳單 | 到「帳單」把專案連上帳單帳戶 |
+| 有地圖，但沒有圖釘 | `<AdvancedMarker>` 沒有放在 `<GoogleMap>` 裡面，或 `types.ts` 沒加 `lat`、`lng` | 對照步驟 22、23 |
+| 拖幾下之後，地圖上疊了好幾條線 | `RouteLine` 的 `useEffect` 少了 `return () => line.setMap(null)` | 對照步驟 23 |
+| 改個時間，地圖就跳回去 | `FitToStops` 每次都縮放，沒有用 `fittedKey` 判斷 | 對照步驟 23 |
+| `git status` 出現 `.env.local` | 檔案放錯位置（例如放在專案最外層） | 要放在 `frontend` 資料夾裡面，才會被 `frontend/.gitignore` 擋住 |
+
+### 📌 這一段的 3 個重點
+
+1. **`NEXT_PUBLIC_` 的變數大家都看得到**：前端要另外一把金鑰，鎖住網址和 API。後端那把絕對不放進前端。
+2. **能寫成元件的就寫成元件**（圖釘），**不能的就用 `useEffect` 自己畫，cleanup 自己擦**（線）。
+3. **`useRef` 用來「記住一件事但不重畫」**：例如上一次縮放的是哪一天。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 後端已經有一把 Google 金鑰了，為什麼地圖要另外申請一把，還要加限制？
+2. `RouteLine` 的 `useEffect` 如果沒有 `return () => line.setMap(null)`，會發生什麼事？
+3. 為什麼不要每次重畫都把地圖縮放到「每一站都在畫面裡」？
+4. `fittedKey` 為什麼用 `useRef`，不用 `useState`？
+
+<details>
+<summary>點開看解答</summary>
+
+1. 地圖是在瀏覽器裡畫的，金鑰一定要送到瀏覽器（`NEXT_PUBLIC_` 開頭），**任何人按 F12 都看得到**。後端那把沒有限制，被複製走就能用你的帳單呼叫各種 Google API（查景點、算路線……）。另外申請一把，限制「只能從 `localhost:3000` 用」「只能用 Maps JavaScript API」，就算被複製走，換到別的網站也用不了。
+2. 每次 `path` 變了（拖拉、換天），effect 會再畫一條新的線，但舊的線沒人擦，**全部疊在地圖上**，看起來像好幾種順序同時存在。離開編輯頁時也一樣，那些線物件沒被收掉。
+3. 使用者自己把地圖拖到旁邊、或放大看某一區的時候，只要改個時間（畫面就會重畫），地圖就被拉回去，什麼都看不清楚。所以只在「換天、多一站或少一站」這種**景點範圍真的變了**的時候才縮放。
+4. `fittedKey` 只是讓 effect 記住「上一次縮放的是哪一天、幾站」，畫面上沒有任何地方要顯示它。`useRef` 改了不會重畫；用 `useState` 的話，每次記錄都會多重畫一次，完全沒必要。
+
+</details>
+
+#### 你的實作紀錄（2026-11-11）
+
+- `TripMap.tsx`、`types.ts` 的座標、編輯頁加的兩段，都跟教材**逐字一樣**。編輯頁 `import TripMap` 下面多了一個空行，不影響程式。型別檢查、lint 都通過。
+- `frontend/.env.local`（只檢查格式，沒有印出金鑰）：變數名稱正確，金鑰 39 個字元、`AIza` 開頭，沒有多餘的空白或引號；`git check-ignore` 確認被 `frontend/.gitignore` 第 34 行擋住，git 裡沒有任何 `.env` 檔。
+- 用 Chrome 對你的畫面測（只拖拉、換天、按取消，沒有儲存，沒動到資料庫）：
+  - **地圖用你的金鑰正常載入**：畫面是亮的，沒有「For development purposes only」，也沒有錯誤對話框。表示 Maps JavaScript API 有啟用，`localhost:3000` 也在允許的網站裡。
+  - 第 1 天 3 根圖釘（1 伏見稻荷、2 清水寺、3 花見小路），照順序連線；拖拉之後還沒儲存，圖釘編號就跟著變；按取消變回來；第 2 天是八坂神社 1 根。主控台沒有錯誤。
+- 想用 `127.0.0.1:3000` 驗證「其他網址不能用這把金鑰」，但 Next.js 開發模式本身就擋掉不同網址的連線，頁面停在「載入中…」，沒驗到。請到 Google 主控台的「憑證」確認這把金鑰的兩個限制都有設定。

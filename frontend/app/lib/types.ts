@@ -5,6 +5,8 @@ export type Destination = {
   city_name: string | null;
   description: string | null;
   geo_tags: string | null;
+  lat: number | null; // 緯度，地圖插針用
+  lng: number | null; // 經度
 };
 
 // 後端 POST /api/search 回傳的樣子（schemas/search.py 的 SearchOut）
