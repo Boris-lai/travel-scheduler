@@ -24,3 +24,9 @@ class TripOut(BaseModel):
 # 點餐單：把一個景點加進景點池
 class TripPlaceCreate(BaseModel):
     destination_id: int
+
+# 點餐單：用 Google 的地點加進景點池（資料庫還沒有的話，會先建立景點）
+
+
+class TripPlaceGoogleCreate(BaseModel):
+    google_place_id: str = Field(min_length=1, max_length=255)

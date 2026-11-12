@@ -7,6 +7,7 @@ export type Destination = {
   geo_tags: string | null;
   lat: number | null; // 緯度，地圖插針用
   lng: number | null; // 經度
+  google_place_id: string | null; // Google 的地點 id
 };
 
 // 後端 POST /api/search 回傳的樣子（schemas/search.py 的 SearchOut）
@@ -45,3 +46,10 @@ export type ItineraryItem = {
 
 // 每一站可以填的兩個時間
 export type TimeField = "arrival_time" | "departure_time";
+
+// 後端 GET /api/places/autocomplete 回傳的一筆（schemas/place.py）
+export type PlaceSuggestion = {
+  google_place_id: string;
+  name: string; // 例如「金閣寺」
+  detail: string | null; // 例如「日本京都府京都市北區……」
+};

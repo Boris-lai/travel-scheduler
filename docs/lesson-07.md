@@ -1,6 +1,6 @@
 # 第 7 課：編輯頁（拖拉 ＋ 地圖）
 
-> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）✅ ／ 第 4 段（地圖）✅ ／ 第 5 段（交通時間、Google 搜尋框）⏳
+> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）✅ ／ 第 4 段（地圖）✅ ／ 第 5 段上半（Google 搜尋框）✅ ／ 第 5 段下半（交通時間）⏳
 > **日期**：2026-11-05 ～
 > **對照原專案**：`frontend/app/dashboard/`、`frontend/app/edit/[tripId]/`、`frontend/app/components/edit/`、`frontend/app/hooks/useEditData.ts`、`frontend/app/hooks/useItineraryQueries.ts`、`frontend/app/lib/api.ts`
 
@@ -18,7 +18,7 @@
 | 2 | 把景點放進行程：搜尋頁卡片加「加入行程」，編輯頁可以「排到第 N 天」、刪掉一站 | 按鈕改資料後，畫面自動更新 |
 | 3 | 拖拉排序 ＋ 填時間 ＋ 儲存（打第 6 課收尾的 `PUT`） | dnd-kit、「草稿」的概念 |
 | 4 | Google 地圖：每一天的景點插針、照順序連線 | 瀏覽器用的 Google 金鑰 |
-| 5 | 交通時間 ＋ 用 Google 搜尋框加任意景點 | 後端再加一張表 |
+| 5 | 上半：用 Google 搜尋框加任意景點；下半：交通時間 | 後端呼叫更多 Google API |
 
 ---
 
@@ -2574,3 +2574,615 @@ frontend/
   - **地圖用你的金鑰正常載入**：畫面是亮的，沒有「For development purposes only」，也沒有錯誤對話框。表示 Maps JavaScript API 有啟用，`localhost:3000` 也在允許的網站裡。
   - 第 1 天 3 根圖釘（1 伏見稻荷、2 清水寺、3 花見小路），照順序連線；拖拉之後還沒儲存，圖釘編號就跟著變；按取消變回來；第 2 天是八坂神社 1 根。主控台沒有錯誤。
 - 想用 `127.0.0.1:3000` 驗證「其他網址不能用這把金鑰」，但 Next.js 開發模式本身就擋掉不同網址的連線，頁面停在「載入中…」，沒驗到。請到 Google 主控台的「憑證」確認這把金鑰的兩個限制都有設定。
+- 你在 Google 主控台確認過了：兩個限制（網站 `http://localhost:3000/*`、API 只有 Maps JavaScript API）都有設定。已經 commit（`5b1b262`），`.env.local` 沒有進 git。
+
+---
+
+## 第 5 段上半：用 Google 搜尋框加景點
+
+> 第 5 段原本是「交通時間 ＋ Google 搜尋框」。測試時發現，算交通時間要用的 Google Routes API，你的金鑰還沒開通；搜尋框用的 Places API 已經能用了。所以拆成兩半，**先做搜尋框**，交通時間放下半。
+
+### 開始前的測試結果（2026-11-11）
+
+我先複製一份**你現在的**資料庫和前後端來測。後端用的是你後端那把金鑰（跟第 3 課 AI 查證景點同一把），金鑰沒有印出來：
+
+| 測試 | 結果 |
+|---|---|
+| `GET /api/places/autocomplete?text=金閣寺` | 5 筆建議：金閣寺、金閣寺第1駐車場、金閣寺町…… |
+| 把金閣寺加進京都三日遊（資料庫已經有，AI 找過） | 201，直接用原本那筆景點（`source` 還是 `ai`），沒有再問 Google |
+| 再加一次 | 409「這個景點已經在景點池裡了」 |
+| 九份老街、東京晴空塔（資料庫還沒有） | 201，向 Google 查詳細資料，建立新景點（`source` 是 `google`） |
+| 亂打的 `google_place_id` | 502「Google 查詢失敗，請稍後再試」 |
+| 不存在的行程 | 404 |
+| 空字串、太長的字 | 422 |
+| 編輯頁的搜尋框只打 1 個字 | 不查 |
+| 用 0.08 秒一個字的速度打「金閣寺」 | **只查 1 次**（停下來 0.3 秒才查） |
+| 換別的字，再打回「金閣寺」 | 不會再查，直接用 5 分鐘內查過的結果 |
+| 拿掉 `useEffect` 的 cleanup，同樣速度打「伏見稻荷大社」 | **查了 5 次**（伏見、伏見稻、伏見稻荷……）；加回來只查 1 次 |
+| 打「清水寺」 | 第 1 筆就是景點池裡的音羽山清水寺（同一個 `google_place_id`），顯示「✓ 已在景點池」，按不了 |
+| 點「艾菲爾鐵塔」 | 加進景點池，搜尋框清空、建議收起來；可以排進第 1 天 |
+| 有草稿（拖拉還沒儲存）時加景點 | 可以加，草稿和黃色提示都還在；「排到第 N 天」照樣鎖住 |
+| 打開編輯頁 | 景點池的 API 只打 1 次（編輯頁和搜尋框共用） |
+
+兩個小發現：
+
+- Google 給日本的地址，就算指定繁體中文，城市還是英文（`Kyoto`、`Sumida City`）。景點名稱是中文的。
+- 有時候建議裡的名字跟加進去之後的名字不太一樣（建議是「嵐山竹林の小径」，加進去變「嵐山竹林小徑」），因為兩支 API 是分開查的。
+
+### 1. 學到的觀念
+
+#### 整個流程
+
+```
+你打「金閣寺」
+  │ 停下來 0.3 秒
+  ▼
+前端 GET /api/places/autocomplete?text=金閣寺
+  ▼
+後端 → Google 自動完成（Autocomplete）→ 5 筆建議（名稱、地址、google_place_id）
+  ▼
+你點了第 1 筆
+  ▼
+前端 POST /api/trips/1/places/google  { google_place_id: "ChIJ..." }
+  ▼
+後端：資料庫有這個 google_place_id 嗎？
+  ├─ 有（AI 找過）→ 直接用
+  └─ 沒有 → Google 查詳細資料（Place Details）→ 建立新景點（source = "google"）
+  ▼
+加進景點池 → 前端重抓景點池
+```
+
+#### 為什麼讓後端去問 Google
+
+原專案是在**瀏覽器**裡放 Google 的搜尋框元件，瀏覽器直接跟 Google 要建議。這樣做的話，你第 4 段那把瀏覽器金鑰就得多開 Places API。
+
+我們讓**後端**去問：
+
+| | 原專案（瀏覽器直接問） | 我們（後端去問） |
+|---|---|---|
+| 用哪把金鑰 | 瀏覽器那把，要多開 Places API | 後端那把，第 3 課就能用 Places API 了 |
+| 金鑰會不會被看到 | 會（靠限制保護） | 不會 |
+| 搜尋框長什麼樣子 | Google 的元件，樣式不好改 | 自己寫的，跟其他畫面一樣用 Tailwind |
+| 缺點 | — | 多繞一圈（前端 → 後端 → Google），稍微慢一點點 |
+
+#### 等你停下來再查（debounce）
+
+如果每打一個字就查一次，打「伏見稻荷大社」要查 5 次（「伏」只有 1 個字不查），前 4 次的結果根本用不到，還要花 Google 的額度。所以：
+
+```tsx
+const [text, setText] = useState("");       // 輸入框裡的字（每打一個字就變）
+const [keyword, setKeyword] = useState(""); // 真的拿去查的字
+
+useEffect(() => {
+  const timer = setTimeout(() => setKeyword(text.trim()), 300);
+  return () => clearTimeout(timer); // 0.3 秒內又打字了：取消上一次的計時
+}, [text]);
+```
+
+1. 打「金」→ 開始計時 0.3 秒。
+2. 0.1 秒後打「閣」→ `text` 變了，React 先執行 cleanup（**取消**「金」的計時），再開始新的計時。
+3. 0.1 秒後打「寺」→ 同樣，取消「金閣」的計時，重新計時。
+4. 停下來 0.3 秒 → 計時到了，`keyword` 變成「金閣寺」→ `useQuery` 的 `queryKey` 變了，才去查。
+
+這叫 **debounce**（防彈跳）。又是 `useEffect` 的 cleanup：第 4 段是擦掉舊的線，這次是取消舊的計時。
+
+`useQuery` 再加兩道關卡：
+
+- `enabled: keyword.length >= 2`：至少 2 個字才查。
+- `staleTime: 5 分鐘`：查過的字放在小白板上，5 分鐘內再打一樣的字，直接用，不用再問。
+
+#### 同一個 `queryKey`，資料共用
+
+搜尋框要知道「哪些已經在景點池」，才能顯示「✓ 已在景點池」。它自己也寫了一個 `useQuery`：
+
+```tsx
+const placesQuery = useQuery({
+  queryKey: ["tripPlaces", tripId], // 跟編輯頁的景點池一模一樣
+  queryFn: () => listTripPlaces(tripId),
+});
+```
+
+編輯頁和搜尋框都用 `["tripPlaces", tripId]`，TanStack Query 知道是**同一份資料**，只打一次 API，兩邊共用。我測過：打開編輯頁，景點池的 API 只打了 1 次。加入景點後讓它作廢，編輯頁的景點池和搜尋框的「✓ 已在景點池」會**一起**更新。
+
+所以元件需要資料時，不一定要從外面用 props 傳進來，用同一個 `queryKey` 自己拿也可以。
+
+#### 網址裡的中文：`encodeURIComponent`
+
+```ts
+`/api/places/autocomplete?text=${encodeURIComponent(text)}`
+```
+
+網址只能放英文字母、數字和少數符號。中文、空白、`&`、`?` 這些要先「編碼」：`金閣寺` 會變成 `%E9%87%91%E9%96%A3%E5%AF%BA`。尤其是 `&`：沒編碼的話，「A&B」會被當成兩個參數。後端 FastAPI 收到時會自動解碼回來。
+
+#### `db.flush()`：先拿到 id，最後一起存
+
+```python
+destination = Destination(**details, google_place_id=..., source="google")
+db.add(destination)
+db.flush()  # 送到資料庫，拿到 id（還沒存檔）
+db.add(TripPlace(trip_id=trip_id, destination_id=destination.id))
+db.commit()  # 新景點和景點池那一筆，一起存檔
+```
+
+景點池那一筆需要景點的 `id`，但 `id` 是資料庫給的，要送過去才知道。第 6 課刪一站時用過 `flush()`：**把動作先送到資料庫，但還沒存檔**。這樣就拿得到 `id`，最後一次 `commit()`：兩筆一起成功，或一起失敗。
+
+`**details`：把 `details` 這個 dict 拆開，變成 `place_name=...`、`city_name=...` 這樣一個一個傳進去，跟第 2 課的 `Destination(**payload.model_dump())` 一樣。
+
+### 2. 實作步驟
+
+這一段**前後端都要改**，但不用改資料表、不用跑 Alembic，也不用裝新套件。
+
+#### 步驟 26：後端 `services/places.py`，在 `if __name__ == "__main__":` 的**上面**加上
+
+```python
+AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
+DETAILS_URL = "https://places.googleapis.com/v1/places/"
+# 有 displayName，屬於 Place Details Pro，每月前 5,000 次免費
+DETAILS_FIELD_MASK = "id,displayName,formattedAddress,location,addressComponents"
+
+
+def autocomplete(text: str) -> list[dict]:
+    """打字時的建議清單：Google 猜你要找的地點（最多 5 個）"""
+    resp = requests.post(
+        AUTOCOMPLETE_URL,
+        headers={"X-Goog-Api-Key": MAPS_API_KEY},
+        json={"input": text, "languageCode": "zh-TW"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    suggestions = []
+    for s in resp.json().get("suggestions", []):
+        p = s["placePrediction"]
+        suggestions.append({
+            "google_place_id": p["placeId"],
+            "name": p["structuredFormat"]["mainText"]["text"],  # 例如「金閣寺」
+            # 例如「日本京都府京都市北區金閣寺町」，有時候沒有
+            "detail": p["structuredFormat"].get("secondaryText", {}).get("text"),
+        })
+    return suggestions
+
+
+def find_city(components: list[dict]) -> str | None:
+    """地址是一個一個零件。先找城市（locality），沒有就用縣市、都道府縣"""
+    for wanted in ["locality", "administrative_area_level_1"]:
+        for c in components:
+            if wanted in c["types"]:
+                return c["longText"]
+    return None
+
+
+def place_details(google_place_id: str) -> dict:
+    """用 google_place_id 查一個地點，整理成 Destination 要的欄位"""
+    resp = requests.get(
+        DETAILS_URL + google_place_id,
+        headers={"X-Goog-Api-Key": MAPS_API_KEY,
+                 "X-Goog-FieldMask": DETAILS_FIELD_MASK},
+        params={"languageCode": "zh-TW"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    place = resp.json()
+    return {
+        "place_name": place["displayName"]["text"],
+        "city_name": find_city(place.get("addressComponents", [])),
+        "address": place.get("formattedAddress"),
+        "lat": place["location"]["latitude"],
+        "lng": place["location"]["longitude"],
+    }
+```
+
+- `autocomplete`：打字時的建議。Google 回來的每一筆有 `placeId`、主標題（`mainText`，地點名稱）、副標題（`secondaryText`，地址）。
+- `find_city`：Google 的地址是一個一個零件（`addressComponents`），每個零件有 `types` 說它是什麼。先找 `locality`（城市），台灣的地址常常沒有，就用 `administrative_area_level_1`（縣市）。
+- `place_details`：用 `google_place_id` 查一個地點。`X-Goog-FieldMask` 跟第 3 課一樣，只拿要的欄位，拿越多越貴。
+
+#### 步驟 27：建議的格式
+
+**新增** `schemas/place.py`：
+
+```python
+from pydantic import BaseModel
+
+
+# 出餐單：Google 自動完成的一筆建議
+class PlaceSuggestion(BaseModel):
+    google_place_id: str
+    name: str
+    detail: str | None
+```
+
+`schemas/trip.py` 的 `TripPlaceCreate` **下面**加上：
+
+```python
+# 點餐單：用 Google 的地點加進景點池（資料庫還沒有的話，會先建立景點）
+class TripPlaceGoogleCreate(BaseModel):
+    google_place_id: str = Field(min_length=1, max_length=255)
+```
+
+#### 步驟 28：新增 `router/places.py`，掛到 `main.py`
+
+**新增** `router/places.py`：
+
+```python
+import requests
+from fastapi import APIRouter, HTTPException, Query
+
+from schemas.place import PlaceSuggestion
+from services.places import autocomplete
+
+router = APIRouter()
+
+
+@router.get("/api/places/autocomplete", response_model=list[PlaceSuggestion])
+def place_autocomplete(text: str = Query(min_length=1, max_length=100)):
+    try:
+        return autocomplete(text)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Google 搜尋失敗，請稍後再試")
+```
+
+- `Query(min_length=1, max_length=100)`：網址上的 `?text=` 也可以檢查長度，太短、太長都回 422。
+- Google 出錯（金鑰、網路……）時，`requests` 會丟出 `RequestException`，我們改回 502（「我後面接的服務出錯了」），不要讓整個後端噴 500。
+
+`main.py` 整個換掉（多了 `places`）：
+
+```python
+from fastapi import FastAPI
+from router import destinations, itinerary, places, search, trips
+
+app = FastAPI()
+
+app.include_router(destinations.router)
+app.include_router(search.router)
+app.include_router(trips.router)
+app.include_router(itinerary.router)
+app.include_router(places.router)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+```
+
+#### 步驟 29：`router/trips.py` 加上「用 Google 地點加進景點池」
+
+**① 最上面的 import** 換成這樣（多了 `requests`、`TripPlaceGoogleCreate`、`place_details`）：
+
+```python
+import requests
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from models import Destination, Trip, TripPlace
+from schemas.destination import DestinationOut
+from schemas.trip import TripCreate, TripOut, TripPlaceCreate, TripPlaceGoogleCreate
+from services.places import place_details
+```
+
+**② `add_trip_place` 和 `remove_trip_place` 中間**，加上：
+
+```python
+@router.post(
+    "/api/trips/{trip_id}/places/google",
+    response_model=DestinationOut,
+    status_code=201,
+)
+def add_trip_place_from_google(
+    trip_id: int, payload: TripPlaceGoogleCreate, db: Session = Depends(get_db)
+):
+    get_trip_or_404(db, trip_id)
+    # 資料庫已經有這個地點（例如 AI 找過）就直接用，不用再問 Google
+    destination = db.scalar(
+        select(Destination).where(
+            Destination.google_place_id == payload.google_place_id)
+    )
+    if destination is None:
+        try:
+            details = place_details(payload.google_place_id)
+        except requests.RequestException:
+            raise HTTPException(status_code=502, detail="Google 查詢失敗，請稍後再試")
+        destination = Destination(
+            **details, google_place_id=payload.google_place_id, source="google"
+        )
+        db.add(destination)
+        db.flush()  # 先送到資料庫拿到 id（還沒存檔），下一行才用得到 destination.id
+
+    db.add(TripPlace(trip_id=trip_id, destination_id=destination.id))
+    try:
+        db.commit()  # 新景點和景點池那一筆，一起存檔
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="這個景點已經在景點池裡了")
+    return destination
+```
+
+存檔之後，uvicorn 會自己重開。
+
+#### 步驟 30：先用 `/docs` 測後端
+
+打開 http://localhost:8000/docs：
+
+1. `GET /api/places/autocomplete`，`text` 填「金閣寺」→ 5 筆建議，複製第 1 筆的 `google_place_id`。
+2. `POST /api/trips/{trip_id}/places/google`，`trip_id` 填 4（大阪兩日遊），body 填 `{"google_place_id": "剛剛複製的"}`：
+   - 金閣寺本來就在大阪兩日遊的景點池 → **409**。
+3. 回到第 1 步，`text` 改成「九份老街」，複製第 1 筆的 id，加進行程 4 → **201**，`source` 是 `google`、`city_name` 是「新北市」。（這筆在下一步的測試會用到，先留著。）
+4. 再試一次第 3 步 → **409**。
+
+#### 步驟 31：前端 `app/lib/types.ts`
+
+`Destination` 的 `lng` 下面加一行：
+
+```ts
+export type Destination = {
+  id: number;
+  place_name: string;
+  city_name: string | null;
+  description: string | null;
+  geo_tags: string | null;
+  lat: number | null; // 緯度，地圖插針用
+  lng: number | null; // 經度
+  google_place_id: string | null; // Google 的地點 id
+};
+```
+
+最下面加上：
+
+```ts
+// 後端 GET /api/places/autocomplete 回傳的一筆（schemas/place.py）
+export type PlaceSuggestion = {
+  google_place_id: string;
+  name: string; // 例如「金閣寺」
+  detail: string | null; // 例如「日本京都府京都市北區……」
+};
+```
+
+#### 步驟 32：前端 `app/lib/api.ts` 加兩個函式
+
+**① 最上面的 `import type`**，多一個 `PlaceSuggestion`：
+
+```ts
+import type {
+  Destination,
+  ItineraryItem,
+  PlaceSuggestion,
+  SearchResponse,
+  Trip,
+  TripCreate,
+} from "@/app/lib/types";
+```
+
+**② `searchDestinations` 下面**（`// ---------- 行程 ----------` 的上面）加上：
+
+```ts
+// 打字時的建議：後端再去問 Google。中文、空白放進網址前要先編碼
+export function searchGooglePlaces(text: string) {
+  return apiFetch<PlaceSuggestion[]>(
+    `/api/places/autocomplete?text=${encodeURIComponent(text)}`,
+  );
+}
+```
+
+**③ `addTripPlace` 下面**（`removeTripPlace` 的上面）加上：
+
+```ts
+// 用 Google 的地點加進景點池（資料庫還沒有這個景點的話，後端會先建立）
+export function addGooglePlace(tripId: number, googlePlaceId: string) {
+  return apiFetch<Destination>(`/api/trips/${tripId}/places/google`, {
+    method: "POST",
+    body: JSON.stringify({ google_place_id: googlePlaceId }),
+  });
+}
+```
+
+#### 步驟 33：新增 `app/components/GooglePlaceSearch.tsx`
+
+```tsx
+"use client";
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+
+import {
+  addGooglePlace,
+  listTripPlaces,
+  searchGooglePlaces,
+} from "@/app/lib/api";
+
+type Props = {
+  tripId: number;
+};
+
+// 景點池上面的搜尋框：打景點名稱，從 Google 的建議裡挑一個加進景點池
+export default function GooglePlaceSearch({ tripId }: Props) {
+  const queryClient = useQueryClient();
+  const [text, setText] = useState(""); // 輸入框裡的字
+  const [keyword, setKeyword] = useState(""); // 停下來 0.3 秒後，真的拿去查的字
+
+  // 每打一個字就重新計時，停下來 0.3 秒才更新 keyword
+  useEffect(() => {
+    const timer = setTimeout(() => setKeyword(text.trim()), 300);
+    return () => clearTimeout(timer); // 0.3 秒內又打字了：取消上一次的計時
+  }, [text]);
+
+  const suggestQuery = useQuery({
+    queryKey: ["googlePlaces", keyword],
+    queryFn: () => searchGooglePlaces(keyword),
+    enabled: keyword.length >= 2, // 至少 2 個字才查
+    staleTime: 5 * 60 * 1000, // 5 分鐘內查過一樣的字，直接用小白板上的
+  });
+  // 跟編輯頁同一個 queryKey：不會多打一次 API，兩邊共用同一份景點池
+  const placesQuery = useQuery({
+    queryKey: ["tripPlaces", tripId],
+    queryFn: () => listTripPlaces(tripId),
+  });
+  const inPool = new Set(placesQuery.data?.map((p) => p.google_place_id));
+
+  const addPlace = useMutation({
+    mutationFn: (googlePlaceId: string) =>
+      addGooglePlace(tripId, googlePlaceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tripPlaces", tripId] });
+      setText(""); // 加好了，清空搜尋框
+      setKeyword("");
+    },
+  });
+
+  return (
+    <div className="mb-4">
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="用 Google 找景點，例如：金閣寺"
+        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+      />
+      {addPlace.isError && (
+        <p className="mt-1 text-sm text-red-600">{addPlace.error.message}</p>
+      )}
+      {suggestQuery.isError && (
+        <p className="mt-1 text-sm text-red-600">
+          {suggestQuery.error.message}
+        </p>
+      )}
+      {keyword.length >= 2 && (
+        <ul className="mt-2 flex flex-col gap-1 rounded-lg border border-gray-200 p-1">
+          {suggestQuery.isPending && (
+            <li className="px-3 text-sm text-gray-500">搜尋中…</li>
+          )}
+          {suggestQuery.data?.length === 0 && (
+            <li className="px-3 text-sm text-gray-500">找不到符合的地點</li>
+          )}
+          {suggestQuery.data?.map((s) => (
+            <li key={s.google_place_id}>
+              <button
+                type="button"
+                onClick={() => addPlace.mutate(s.google_place_id)}
+                disabled={inPool.has(s.google_place_id) || addPlace.isPending}
+                className="w-full rounded-lg px-3 py-2 text-left hover:bg-blue-50 disabled:cursor-default disabled:hover:bg-transparent"
+              >
+                <span className="block text-sm font-semibold">{s.name}</span>
+                <span className="block text-xs text-gray-500">
+                  {inPool.has(s.google_place_id) ? "✓ 已在景點池" : s.detail}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+```
+
+#### 步驟 34：`app/trips/[tripId]/page.tsx` 加上搜尋框
+
+**① 最上面**，`import SortableStop` 那行的**上面**加一行：
+
+```tsx
+import GooglePlaceSearch from "@/app/components/GooglePlaceSearch";
+import SortableStop from "@/app/components/SortableStop";
+```
+
+**② 景點池的標題下面**加一行：
+
+```tsx
+          <h2 className="mb-3 text-lg font-bold">景點池</h2>
+          <GooglePlaceSearch tripId={tripId} />
+```
+
+#### 步驟 35：測試
+
+確認 uvicorn、`npm run dev` 都在跑，打開**我的行程 → 京都三日遊**。
+
+1. 景點池最上面多了一個搜尋框。
+2. 打 1 個字（例如「清」）→ 沒有反應。再打「水寺」→ 停一下，下面出現建議。第 1 筆「清水寺」就是景點池裡的音羽山清水寺，顯示「✓ 已在景點池」、按不了。
+3. 打開 F12 → **Network**，清空列表，再打「銀閣寺」→ 只有**一個** `autocomplete?text=...` 的請求，不是每個字一個。
+4. 點建議裡的**銀閣寺** → 加進景點池最下面，搜尋框清空。按它的「排到第 1 天」→ 地圖上多一根圖釘。
+5. 打「九份老街」→ 第 1 筆不是「✓ 已在景點池」（步驟 30 加的是大阪兩日遊，不是京都三日遊）→ 點下去加進來，這次**不會再問 Google 詳細資料**，因為資料庫已經有了。景點池它的城市是「新北市」。
+6. 隨便打一串亂碼 → 「找不到符合的地點」。
+7. 拖拉一下（出現黃色提示）→ 用搜尋框加一個景點 → 景點池多一個，**草稿和黃色提示還在**。加進景點池不會動到每日行程，所以可以加；「排到第 N 天」照樣鎖住。按「取消」。
+8. **實驗（想多看懂的話）：拿掉 cleanup**。把 `GooglePlaceSearch` 裡 `return () => clearTimeout(timer);` 那一行刪掉，存檔 → F12 → Network → 打「伏見稻荷大社」→ 每打一個字就多一個請求（我測的是 5 個）。看完加回來。
+
+### 3. 這一段結束後的資料夾
+
+```
+backend/
+├── main.py                    ← 改：掛上 places
+├── router/
+│   ├── places.py              ← 新增：GET /api/places/autocomplete
+│   └── trips.py               ← 改：POST /api/trips/{trip_id}/places/google
+├── schemas/
+│   ├── place.py               ← 新增：PlaceSuggestion
+│   └── trip.py                ← 改：TripPlaceGoogleCreate
+└── services/
+    └── places.py              ← 改：autocomplete、find_city、place_details
+
+frontend/app/
+├── components/
+│   └── GooglePlaceSearch.tsx  ← 新增：搜尋框
+├── lib/
+│   ├── api.ts                 ← 改：searchGooglePlaces、addGooglePlace
+│   └── types.ts               ← 改：google_place_id、PlaceSuggestion
+└── trips/[tripId]/
+    └── page.tsx               ← 改：放上搜尋框
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 建議從哪裡來 | 瀏覽器裡 Google 的搜尋框元件（`PlaceAutocompleteElement`） | 後端 `GET /api/places/autocomplete`，搜尋框自己寫 |
+| 選了之後 | 先跳出介紹視窗（照片、評分、營業時間），再按「加入景點」 | 直接加進景點池 |
+| 點地圖上的景點 | 也會跳出介紹視窗 | 沒有做 |
+| 查詳細資料要的欄位 | `id,displayName,formattedAddress,location,addressComponents` | 一樣 |
+| 城市怎麼找 | `locality` → `postal_town` → `administrative_area_level_2` → `administrative_area_level_1` | `locality` → `administrative_area_level_1` |
+| 新景點的 `source` | `manual` | `google`（跟第 2 課手動新增的 `manual` 分開） |
+| 已經在景點池 | 後端當作成功 | 後端回 409；前端事先標「✓ 已在景點池」 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| `/docs` 沒有 `/api/places/autocomplete` | `main.py` 沒有 `include_router(places.router)`，或沒有 import `places` | 對照步驟 28 |
+| 自動完成回 502 | 後端的 Google 金鑰有問題，看 uvicorn 的終端機 | 跟第 3 課 AI 查證景點同一把金鑰，那邊能用這邊就能用 |
+| 回 404「找不到這個行程」 | `trip_id` 打錯 | 換成存在的行程 |
+| 打字之後，Network 裡每個字一個請求 | `useEffect` 少了 `return () => clearTimeout(timer)` | 對照步驟 33 |
+| 建議出現了，但點下去景點池沒變 | `addPlace` 的 `onSuccess` 沒有讓 `["tripPlaces", tripId]` 作廢 | 對照步驟 33 |
+| 「✓ 已在景點池」都沒出現 | `types.ts` 的 `Destination` 沒加 `google_place_id` | 對照步驟 31 |
+| 打「A&B」這種有 `&` 的字，建議怪怪的 | 網址沒有 `encodeURIComponent` | 對照步驟 32 |
+| 日本景點的城市是英文（`Kyoto`） | Google 的地址資料就是這樣 | 正常，名稱是中文就好 |
+
+### 📌 這一段的 3 個重點
+
+1. **讓後端去問外部服務**：金鑰不外流，前端只認得自己的 API。
+2. **debounce：停下來才查**。`setTimeout` 開始計時，`useEffect` 的 cleanup `clearTimeout` 取消舊的。
+3. **同一個 `queryKey` 就是同一份資料**：不同元件各自 `useQuery`，只打一次 API，作廢時一起更新。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 搜尋框如果不等使用者停下來，每打一個字就查一次，會怎樣？
+2. 拿掉 `return () => clearTimeout(timer)`，打「金閣寺」會查幾次？
+3. 加進景點池的 API 為什麼要先查「資料庫有沒有這個 `google_place_id`」，不直接問 Google？
+4. 搜尋框要顯示「✓ 已在景點池」，就要知道景點池有哪些。它沒有從編輯頁用 props 拿資料，自己也寫了一個 `useQuery`，為什麼打開頁面時，景點池的 API 還是只打 1 次？
+
+<details>
+<summary>點開看解答</summary>
+
+1. 打「伏見稻荷大社」會查 5 次（「伏」只有 1 個字不查），前 4 次的結果根本不會用到，白白花掉 Google 的額度，後端也多做事。字越長浪費越多。
+2. 會查 2 次（「金閣」「金閣寺」），跟沒有 debounce 一樣，只是每次都晚 0.3 秒。因為舊的計時沒有被取消，「金」「金閣」「金閣寺」三個計時都會跑完，各自更新一次 `keyword`（「金」只有 1 個字不查）。我測「伏見稻荷大社」查了 5 次，有 cleanup 只查 1 次。cleanup 的工作就是「新的要開始了，舊的取消掉」。
+3. 第一，省錢：AI 找過的景點資料庫裡早就有了，再問 Google 是浪費。第二，不會重複：`google_place_id` 在資料表是 `unique`，同一個地點不能存兩筆，硬存的話資料庫會擋下來（`IntegrityError`）。第三，保留比較好的資料：AI 找的景點有中文介紹、`geo_tags`，Google 新建的沒有。
+4. 因為兩邊的 `queryKey` 都是 `["tripPlaces", tripId]`。TanStack Query 用 `queryKey` 認資料：一樣的 key 就是同一份，只打一次 API，兩個元件共用小白板上的同一份。加入景點後讓它作廢，兩邊也會**一起**重抓、一起更新。
+
+</details>
+
+#### 你的實作紀錄（2026-11-12）
+
+- 後端 6 個檔案、前端 4 個檔案都正確。差別只有：`find_city` 多了你自己加的說明註解；`main.py` 的 `places`、`api.ts` 的 `PlaceSuggestion` 放在清單最後面（順序不同，功能一樣）；其他只差排版。Python 語法檢查、型別檢查、lint 都通過，`/docs` 裡有兩支新 API。
+- 你的資料庫（只讀）：
+  - 步驟 30 有做：九份老街（`source` 是 `google`、城市「新北市」）在大阪兩日遊。
+  - 步驟 35 有做：京都三日遊的景點池多了銀閣寺、九份老街、京都大學，銀閣寺排在第 1 天第 4 站。
+  - 另外有一筆「慈照寺」（`source` 是 `google`），不在任何景點池。慈照寺是銀閣寺的正式名稱：建議裡有兩筆「銀閣寺」，其中一筆查詳細資料時，Google 回的名字是「慈照寺」。這就是「建議的名字跟加進去的名字可能不一樣」。留在 `destinations` 表裡沒關係，跟 AI 找到、還沒加進行程的景點一樣。
+- 用 Chrome 對你的畫面測（只打字，沒有點，沒動到資料庫）：打「清水寺」只查 1 次；第 1 筆顯示「✓ 已在景點池」、按不了；另外還有大阪、長野的清水寺。主控台沒有錯誤。

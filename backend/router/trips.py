@@ -1,3 +1,4 @@
+import requests
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -6,7 +7,9 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from models import Destination, Trip, TripPlace
 from schemas.destination import DestinationOut
-from schemas.trip import TripCreate, TripOut, TripPlaceCreate
+from schemas.trip import TripCreate, TripOut, TripPlaceCreate, TripPlaceGoogleCreate
+from services.places import place_details
+
 
 router = APIRouter()
 
@@ -78,6 +81,40 @@ def add_trip_place(
         db.commit()
     except IntegrityError:
         # 主鍵（trip_id, destination_id）重複：這個景點已經在景點池裡了
+        db.rollback()
+        raise HTTPException(status_code=409, detail="這個景點已經在景點池裡了")
+    return destination
+
+
+@router.post(
+    "/api/trips/{trip_id}/places/google",
+    response_model=DestinationOut,
+    status_code=201,
+)
+def add_trip_place_from_google(
+    trip_id: int, payload: TripPlaceGoogleCreate, db: Session = Depends(get_db)
+):
+    get_trip_or_404(db, trip_id)
+    # 資料庫已經有這個地點（例如 AI 找過）就直接用，不用再問 Google
+    destination = db.scalar(
+        select(Destination).where(
+            Destination.google_place_id == payload.google_place_id)
+    )
+    if destination is None:
+        try:
+            details = place_details(payload.google_place_id)
+        except requests.RequestException:
+            raise HTTPException(status_code=502, detail="Google 查詢失敗，請稍後再試")
+        destination = Destination(
+            **details, google_place_id=payload.google_place_id, source="google"
+        )
+        db.add(destination)
+        db.flush()  # 先送到資料庫拿到 id（還沒存檔），下一行才用得到 destination.id
+
+    db.add(TripPlace(trip_id=trip_id, destination_id=destination.id))
+    try:
+        db.commit()  # 新景點和景點池那一筆，一起存檔
+    except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="這個景點已經在景點池裡了")
     return destination

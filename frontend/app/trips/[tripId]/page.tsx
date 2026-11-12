@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-
+import GooglePlaceSearch from "@/app/components/GooglePlaceSearch";
 import SortableStop from "@/app/components/SortableStop";
 import TripMap from "@/app/components/TripMap";
 
@@ -183,6 +183,7 @@ export default function TripEditPage() {
         {/* 左邊：景點池 */}
         <section className="rounded-xl bg-white p-5 shadow">
           <h2 className="mb-3 text-lg font-bold">景點池</h2>
+          <GooglePlaceSearch tripId={tripId} />
           {placesQuery.isError && (
             <p className="text-sm text-red-600">{placesQuery.error.message}</p>
           )}

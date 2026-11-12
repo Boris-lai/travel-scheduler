@@ -4,6 +4,7 @@ import type {
   SearchResponse,
   Trip,
   TripCreate,
+  PlaceSuggestion,
 } from "@/app/lib/types";
 
 // 所有 API 共用的小幫手：送出請求 → 檢查有沒有成功 → 把回應變成物件
@@ -34,6 +35,13 @@ export function searchDestinations(location: string) {
     method: "POST",
     body: JSON.stringify({ location }),
   });
+}
+
+// 打字時的建議：後端再去問 Google。中文、空白放進網址前要先編碼
+export function searchGooglePlaces(text: string) {
+  return apiFetch<PlaceSuggestion[]>(
+    `/api/places/autocomplete?text=${encodeURIComponent(text)}`,
+  );
 }
 
 // ---------- 行程 ----------
@@ -67,6 +75,14 @@ export function addTripPlace(tripId: number, destinationId: number) {
   return apiFetch<Destination>(`/api/trips/${tripId}/places`, {
     method: "POST",
     body: JSON.stringify({ destination_id: destinationId }),
+  });
+}
+
+// 用 Google 的地點加進景點池（資料庫還沒有這個景點的話，後端會先建立）
+export function addGooglePlace(tripId: number, googlePlaceId: string) {
+  return apiFetch<Destination>(`/api/trips/${tripId}/places/google`, {
+    method: "POST",
+    body: JSON.stringify({ google_place_id: googlePlaceId }),
   });
 }
 
