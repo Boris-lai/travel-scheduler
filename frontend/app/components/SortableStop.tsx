@@ -3,12 +3,15 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-import type { ItineraryItem, TimeField } from "@/app/lib/types";
+import LegInfo from "@/app/components/LegInfo";
+import type { ItineraryItem, TimeField, TravelMode } from "@/app/lib/types";
 
 type Props = {
   item: ItineraryItem;
   index: number; // 在畫面上排第幾個（從 0 開始）。編號用它，不用 position（可能跳號）
+  next: ItineraryItem | undefined; // 下一站；最後一站沒有
   onTimeChange: (field: TimeField, value: string | null) => void;
+  onModeChange: (mode: TravelMode | null) => void;
   onRemove: () => void;
   removeDisabled: boolean;
 };
@@ -22,7 +25,9 @@ function toInputValue(time: string | null) {
 export default function SortableStop({
   item,
   index,
+  next,
   onTimeChange,
+  onModeChange,
   onRemove,
   removeDisabled,
 }: Props) {
@@ -80,6 +85,7 @@ export default function SortableStop({
             className="rounded border border-gray-300 px-1"
           />
         </div>
+        {next && <LegInfo from={item} to={next} onModeChange={onModeChange} />}
       </div>
       <button
         type="button"

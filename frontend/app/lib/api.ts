@@ -1,10 +1,12 @@
 import type {
   Destination,
   ItineraryItem,
+  LegEstimate,
+  PlaceSuggestion,
   SearchResponse,
+  TravelMode,
   Trip,
   TripCreate,
-  PlaceSuggestion,
 } from "@/app/lib/types";
 
 // 所有 API 共用的小幫手：送出請求 → 檢查有沒有成功 → 把回應變成物件
@@ -128,8 +130,25 @@ export function saveDayItinerary(
           id: item.id,
           arrival_time: item.arrival_time,
           departure_time: item.departure_time,
+          travel_mode: item.travel_mode,
         })),
       }),
     },
   );
+}
+
+// 一段路（from → to）用某種交通方式，大概要多久
+export function estimateLeg(
+  from: Destination,
+  to: Destination,
+  mode: TravelMode,
+) {
+  const params = new URLSearchParams({
+    mode,
+    from_lat: String(from.lat),
+    from_lng: String(from.lng),
+    to_lat: String(to.lat),
+    to_lng: String(to.lng),
+  });
+  return apiFetch<LegEstimate>(`/api/legs/estimate?${params}`);
 }

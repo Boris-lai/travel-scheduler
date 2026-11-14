@@ -23,7 +23,7 @@ import {
   removeTripPlace,
   saveDayItinerary,
 } from "@/app/lib/api";
-import type { ItineraryItem, TimeField } from "@/app/lib/types";
+import type { ItineraryItem, TimeField, TravelMode } from "@/app/lib/types";
 
 // 第 N 天的日期 ＝ 出發日 ＋（N − 1）天。後端沒有存，前端自己算
 function dayDate(startDate: string | null, day: number) {
@@ -149,6 +149,14 @@ export default function TripEditPage() {
     setDraft(
       dayItems.map((item) =>
         item.id === itemId ? { ...item, [field]: value } : item,
+      ),
+    );
+  }
+
+  function changeMode(itemId: number, mode: TravelMode | null) {
+    setDraft(
+      dayItems.map((item) =>
+        item.id === itemId ? { ...item, travel_mode: mode } : item,
       ),
     );
   }
@@ -308,9 +316,11 @@ export default function TripEditPage() {
                     key={item.id}
                     item={item}
                     index={index}
+                    next={dayItems[index + 1]}
                     onTimeChange={(field, value) =>
                       changeTime(item.id, field, value)
                     }
+                    onModeChange={(mode) => changeMode(item.id, mode)}
                     onRemove={() => removeItem.mutate(item.id)}
                     removeDisabled={dirty}
                   />

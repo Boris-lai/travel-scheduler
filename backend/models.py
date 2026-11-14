@@ -89,6 +89,8 @@ class ItineraryItem(Base):
     position: Mapped[int] = mapped_column(Integer)  # 當天第幾站，從 0 開始
     arrival_time: Mapped[time | None] = mapped_column(Time)  # 幾點到
     departure_time: Mapped[time | None] = mapped_column(Time)  # 幾點走
+    # 從這一站去下一站怎麼去：WALK（走路）、DRIVE（開車）、TRANSIT（大眾運輸），還沒選是 None
+    travel_mode: Mapped[str | None] = mapped_column(String(10))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

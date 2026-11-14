@@ -1,6 +1,6 @@
 # 第 7 課：編輯頁（拖拉 ＋ 地圖）
 
-> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）✅ ／ 第 4 段（地圖）✅ ／ 第 5 段上半（Google 搜尋框）✅ ／ 第 5 段下半（交通時間）⏳
+> **狀態**：第 1 段（列表頁 ＋ 編輯頁骨架）✅ ／ 第 2 段（把景點放進行程）✅ ／ 第 3 段（拖拉、時間、儲存）✅ ／ 第 4 段（地圖）✅ ／ 第 5 段上半（Google 搜尋框）✅ ／ 第 5 段下半（交通時間）✅
 > **日期**：2026-11-05 ～
 > **對照原專案**：`frontend/app/dashboard/`、`frontend/app/edit/[tripId]/`、`frontend/app/components/edit/`、`frontend/app/hooks/useEditData.ts`、`frontend/app/hooks/useItineraryQueries.ts`、`frontend/app/lib/api.ts`
 
@@ -2580,7 +2580,7 @@ frontend/
 
 ## 第 5 段上半：用 Google 搜尋框加景點
 
-> 第 5 段原本是「交通時間 ＋ Google 搜尋框」。測試時發現，算交通時間要用的 Google Routes API，你的金鑰還沒開通；搜尋框用的 Places API 已經能用了。所以拆成兩半，**先做搜尋框**，交通時間放下半。
+> 第 5 段原本是「交通時間 ＋ Google 搜尋框」。當時測試以為算交通時間要用的 Google Routes API 打不通（後來發現是我的測試腳本沒帶到金鑰，見第 5 段下半開頭的更正），搜尋框用的 Places API 測起來正常。所以拆成兩半，**先做搜尋框**，交通時間放下半。
 
 ### 開始前的測試結果（2026-11-11）
 
@@ -3186,3 +3186,849 @@ frontend/app/
   - 步驟 35 有做：京都三日遊的景點池多了銀閣寺、九份老街、京都大學，銀閣寺排在第 1 天第 4 站。
   - 另外有一筆「慈照寺」（`source` 是 `google`），不在任何景點池。慈照寺是銀閣寺的正式名稱：建議裡有兩筆「銀閣寺」，其中一筆查詳細資料時，Google 回的名字是「慈照寺」。這就是「建議的名字跟加進去的名字可能不一樣」。留在 `destinations` 表裡沒關係，跟 AI 找到、還沒加進行程的景點一樣。
 - 用 Chrome 對你的畫面測（只打字，沒有點，沒動到資料庫）：打「清水寺」只查 1 次；第 1 筆顯示「✓ 已在景點池」、按不了；另外還有大阪、長野的清水寺。主控台沒有錯誤。
+
+---
+
+## 第 5 段下半：交通時間（Google Routes API）
+
+> 原本以為後端呼叫 Google 全部被擋（403），所以這一段先寫成「直線估算」的版本。後來發現是**我的測試腳本**沒帶到金鑰（見「常見踩雷」最後一行），Google 那邊一直是正常的。你還沒開始打這一段，所以 2026-11-13 改寫成**直接用 Google Routes API 算真正的路線**，直線估算留下來當備案：Google 找不到路線的時候才用（例如日本的大眾運輸，Google 沒有資料）。
+
+### 開始前的測試結果（2026-11-13）
+
+我先複製一份**你現在的**資料庫和前後端來測（第 1 天：伏見稻荷 → 清水寺 → 花見小路 → 銀閣寺），後端用的是你後端那把金鑰，金鑰沒有印出來：
+
+| 測試 | 結果 |
+|---|---|
+| Alembic 自動產生遷移檔 | 只有一行：`itinerary_items` 加 `travel_mode` 欄位 |
+| 伏見稻荷 → 清水寺，走路、開車 | Google 算的：走路約 1 小時 8 分（4.7 公里）、開車約 21 分（6.0 公里） |
+| 同一段，大眾運輸 | Google 回空的（沒有日本的大眾運輸資料）→ 改用直線估算：約 20 分・4.0 公里（直線估算） |
+| 台北101 → 九份老街 | 三種 Google 都算得出來：走路約 8 小時 33 分、開車約 43 分、大眾運輸約 1 小時 23 分 |
+| 九份老街 → 清水寺，開車 | Google 回空的（隔著海）→ 改用直線估算 |
+| 起點、終點同一個地方 | 1 分鐘、0 公尺（這時 Google 不給距離） |
+| 故意用錯的金鑰 | 502「Google 路線查詢失敗，請稍後再試」 |
+| 交通方式亂打（`BIKE`）、緯度 100、少給一個參數 | 422 |
+| 時間顛倒、存檔失敗 | 400，交通方式**也沒有存進去**（第 6 課的交易） |
+| 編輯頁：前 3 站下面有「↓ 到下一站」，最後一站沒有 | ✅ |
+| 第 1 站選走路 | 「約 1 小時 8 分・4.7 公里」，出現黃色提示（草稿） |
+| 改成大眾運輸，再改回走路 | 大眾運輸後面寫「（直線估算）」；改回走路**沒有再問後端**，直接用快取 |
+| 第 2 站開車、第 3 站大眾運輸，儲存、重新整理 | 交通方式和時間都還在 |
+| 把銀閣寺拖到第 1 個 | 銀閣寺出現「選交通方式」，花見小路變最後一站，那一行不見 |
+| Google 出錯時的畫面（模擬） | 「計算中…」大約 7 秒後變成紅字「Google 路線查詢失敗，請稍後再試」（前端會先自動重試 3 次） |
+| 手機寬度 | 交通那一行自動換行，畫面不會左右超出 |
+
+### 1. 學到的觀念
+
+#### 存什麼、不存什麼
+
+| | 存不存 | 為什麼 |
+|---|---|---|
+| 交通方式（走路、開車、大眾運輸） | **存**，在 `itinerary_items` 加一欄 `travel_mode` | 這是使用者**選的**，算不出來 |
+| 要花多久、距離多遠 | **不存**，每次要用的時候再算 | 有了兩站的座標和交通方式就**算得出來**；而且順序一改，下一站就換了，存起來的時間馬上過期 |
+
+第 6 課說過「能算出來的就不要存」，這裡又用到一次。
+
+`travel_mode` 的意思是：「**從這一站出發，去下一站怎麼去**」。所以最後一站的 `travel_mode` 用不到，畫面上也不顯示。
+
+拖拉換了順序之後，交通方式會**跟著那一站走**。例如伏見稻荷選了「走路」，不管它的下一站換成誰，它都還是「走路」，時間會依新的下一站重新算。
+
+#### Google Routes API：問 Google 真正的路線
+
+```
+POST https://routes.googleapis.com/directions/v2:computeRoutes
+標頭：X-Goog-Api-Key（金鑰）、X-Goog-FieldMask（只要哪些欄位）
+內容：{"origin": 起點, "destination": 終點, "travelMode": "WALK"}
+```
+
+Google 回：
+
+```json
+{"routes": [{"distanceMeters": 4726, "duration": "4091s"}]}
+```
+
+- 跟第 3 課的 Places API 一樣：金鑰放在標頭，用 FieldMask 說「我只要時間和距離」。要的欄位越多越貴；只拿這兩個，屬於最便宜的 Compute Routes Essentials，每月前 10,000 次免費。
+- `duration` 是**字串** `"4091s"`（秒），要先去掉 `s`、轉成數字，再除以 60 變成分鐘。
+- **找不到路線時，Google 不會報錯**，而是回 `{}`（裡面沒有 `routes`）。這次測到兩種情況：日本的大眾運輸（Google 沒有資料）、兩站隔著海。
+- 為什麼在後端問，不在前端問？後端那把金鑰沒有網站限制，不能放到瀏覽器（第 4 段講過）。前端只要問我們自己的 `/api/legs/estimate`，不用知道 Google 長什麼樣子。
+
+#### 直線估算：Google 找不到路線時的備案
+
+```
+直線距離 × 1.3（實際的路會繞）÷ 速度 ＝ 時間
+```
+
+| 交通方式 | 速度 | 另外加 |
+|---|---|---|
+| 走路 | 每小時 4.5 公里 | — |
+| 開車 | 每小時 30 公里（市區） | — |
+| 大眾運輸 | 每小時 20 公里 | 8 分鐘（走去車站、等車） |
+
+直線距離怎麼算？地球是圓的，但在同一個城市裡，把地面當成平的就夠準了：
+
+- 南北方向：緯度差 1 度，大約 111 公里。
+- 東西方向：經度差 1 度也是 111 公里，但**越往南北兩極越窄**（經線在兩極會合在一起），所以要乘上 `cos(緯度)`。京都在北緯 35 度，經度差 1 度大約只有 91 公里。
+- 兩個方向都算出來，用畢氏定理 `√(東西² + 南北²)` 就是直線距離。
+
+伏見稻荷到清水寺：直線約 3.0 公里，× 1.3 ＝ 4.0 公里。Google 算的走路路線是 4.7 公里，算是接近。
+
+這只是**估算**，所以畫面上一定寫「（直線估算）」，不要讓使用者以為是真的路線。像九份老街到京都，它也會照樣算出「開車 75 小時」，因為它不知道中間隔著海。
+
+#### 「找不到路線」和「出錯」要分開處理
+
+| 情況 | Google 回什麼 | 後端怎麼做 | 畫面 |
+|---|---|---|---|
+| 有路線 | 200，有 `routes` | 回 Google 的時間，`estimated: false` | 約 1 小時 8 分・4.7 公里 |
+| 找不到路線 | 200，`{}` | 改用直線估算，`estimated: true` | 約 20 分・4.0 公里（直線估算） |
+| 出錯（金鑰錯了、Google 故障、網路斷了） | 4xx、5xx，或根本連不上 | 回 502 | 紅字「Google 路線查詢失敗，請稍後再試」 |
+
+「找不到路線」是 Google **正常回答**：「沒有這條路線」，用備案很合理。「出錯」是**根本沒問到**，要老實顯示錯誤，不要偷偷改用直線估算。不然金鑰壞了，畫面看起來還是正常，只是每一段都變成「（直線估算）」，可能好幾天都不會發現。這次我的測試腳本沒帶到金鑰，就被一句看起來像別的問題的 403 騙了兩天。
+
+#### 把「怎麼算」藏在一個檔案裡
+
+```
+前端 LegInfo ──GET /api/legs/estimate──▶ router/legs.py ──▶ estimate_leg()
+                                                              ├─ google_route()：問 Google
+                                                              └─ straight_estimate()：Google 找不到路線時的備案
+```
+
+整個專案**只有 `services/legs.py` 知道「怎麼算」**。前端只知道「問 `/api/legs/estimate`，會拿到分鐘數、公尺數，還有是不是估算的（`estimated`）」。哪天想換別家的路線服務，或加上快取，都只要改這個檔案，**前端一行都不用改**。
+
+#### `Literal`：只能是這幾個字
+
+```python
+TravelMode = Literal["WALK", "DRIVE", "TRANSIT"]
+```
+
+`travel_mode: TravelMode | None` 的意思是「只能是這三個字其中一個，或是 `None`」。送 `BIKE` 進來，FastAPI 直接回 422，我們不用自己寫檢查。
+
+前端也有一模一樣的型別：
+
+```ts
+export type TravelMode = "WALK" | "DRIVE" | "TRANSIT";
+```
+
+前後端的名字一樣，而且跟 Google Routes API 用的名字也一樣，所以後端可以直接把它傳給 Google，不用再翻譯一次。
+
+#### `queryKey` 放座標和交通方式
+
+```ts
+queryKey: ["leg", a.lat, a.lng, b.lat, b.lng, mode],
+staleTime: Infinity,
+```
+
+- **拖拉換了下一站** → `b.lat`、`b.lng` 變了 → key 變了 → 自動重新算。不用自己寫「拖完要重算」。
+- **改交通方式** → `mode` 變了 → 重新算。改回原本的 → key 跟之前一樣 → 直接用小白板上的，不再問後端。
+- `staleTime: Infinity`：同樣的兩點、同樣的交通方式，答案幾乎不會變，查過一次就不用再查。每問一次 Google 都會用掉一次免費額度，能省就省。
+
+第 3 段學過，草稿的資料會變成 `dayItems`，`LegInfo` 拿到的就是草稿。所以**還沒儲存**，時間就已經跟著變了。
+
+#### `as`：跟 TypeScript 說「相信我」
+
+```ts
+onModeChange((e.target.value || null) as TravelMode | null)
+```
+
+`<select>` 的值永遠是字串（`string`）。但我們很確定它只會是 `""`、`"WALK"`、`"DRIVE"`、`"TRANSIT"` 其中一個，因為選項是我們自己寫的。`as TravelMode | null` 就是跟 TypeScript 說：「這個值我保證是這個型別」。
+
+`as` 要小心用：TypeScript 會**直接相信你**，不會再幫你檢查。只有在你真的比它清楚的時候才用。
+
+### 2. 實作步驟
+
+這一段**前後端都要改**，而且要用 **Alembic 加一個欄位**（跟第 3 課一樣）。
+
+#### 步驟 36：`models.py` 的 `ItineraryItem` 加一欄
+
+`departure_time` 那行的下面加上：
+
+```python
+    # 從這一站去下一站怎麼去：WALK（走路）、DRIVE（開車）、TRANSIT（大眾運輸），還沒選是 None
+    travel_mode: Mapped[str | None] = mapped_column(String(10))
+```
+
+#### 步驟 37：用 Alembic 加欄位
+
+```
+cd ~/Desktop/travel-scheduler/backend
+uv run alembic revision --autogenerate -m "add travel_mode to itinerary_items"
+```
+
+打開 `alembic/versions/` 裡**最新的那個檔案**（檔名開頭是一串亂碼，後面是 `add_travel_mode_to_itinerary_items`），確認 `upgrade()` 裡**只有這一行**：
+
+```python
+    op.add_column('itinerary_items', sa.Column('travel_mode', sa.String(length=10), nullable=True))
+```
+
+`downgrade()` 裡是 `op.drop_column('itinerary_items', 'travel_mode')`。確認沒問題，就套用到資料庫：
+
+```
+uv run alembic upgrade head
+```
+
+最後一行應該是 `Running upgrade 6d9176c69eb2 -> ……, add travel_mode to itinerary_items`。
+
+#### 步驟 38：交通方式的格式
+
+**新增** `schemas/leg.py`：
+
+```python
+from typing import Literal
+
+from pydantic import BaseModel
+
+# 交通方式只能是這三種（名稱跟 Google Routes API 一樣，可以直接傳給 Google）
+TravelMode = Literal["WALK", "DRIVE", "TRANSIT"]
+
+
+# 出餐單：一段路（這一站到下一站）要多久
+class LegEstimate(BaseModel):
+    distance_meters: int
+    duration_minutes: int
+    estimated: bool  # False：Google 算的；True：Google 找不到路線，用直線距離估算的
+```
+
+`schemas/itinerary.py` **整個換掉**（多了 `import TravelMode` 和兩個 `travel_mode`）：
+
+```python
+from datetime import time
+
+from pydantic import BaseModel, ConfigDict
+
+from schemas.destination import DestinationOut
+from schemas.leg import TravelMode
+
+
+# 點餐單：把景點池裡的一個景點，排到某一天
+class ItineraryItemCreate(BaseModel):
+    destination_id: int
+
+
+# 出餐單：某一天裡的其中一站
+class ItineraryItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    day_index: int
+    position: int
+    arrival_time: time | None
+    departure_time: time | None
+    travel_mode: TravelMode | None  # 去下一站怎麼去
+    destination: DestinationOut  # 這一站是哪個景點（完整資料）
+
+
+# 存檔時，每一站要送的資料
+class ItineraryItemSave(BaseModel):
+    id: int  # 這一站的 id（不是景點的 id）
+    arrival_time: time | None = None
+    departure_time: time | None = None
+    travel_mode: TravelMode | None = None
+
+
+# 點餐單：一次存好整天，items 照新的順序排
+class ItineraryDaySave(BaseModel):
+    items: list[ItineraryItemSave]
+```
+
+- `ItineraryItemOut` 加了 `travel_mode`：讀每日行程時，會一起回傳。
+- `ItineraryItemSave` 加了 `travel_mode`，預設 `None`：存一整天時，每一站可以帶著自己的交通方式。
+
+#### 步驟 39：新增 `services/legs.py`（問 Google，找不到路線才直線估算）
+
+```python
+import math
+import os
+
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+MAPS_API_KEY = os.getenv("MAPS_API_KEY")
+ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+# 只拿時間和距離：屬於 Compute Routes Essentials，每月前 10,000 次免費
+ROUTES_FIELD_MASK = "routes.duration,routes.distanceMeters"
+
+# 備案（直線估算）用的：每種交通方式的平均速度（公里／小時），都是粗估
+SPEED_KMH = {"WALK": 4.5, "DRIVE": 30, "TRANSIT": 20}
+DETOUR = 1.3  # 實際走的路通常比直線遠，多算 3 成
+TRANSIT_WAIT_MINUTES = 8  # 大眾運輸還要走去車站、等車
+
+
+def waypoint(lat: float, lng: float) -> dict:
+    """Google Routes API 要的地點格式"""
+    return {"location": {"latLng": {"latitude": lat, "longitude": lng}}}
+
+
+def google_route(a_lat: float, a_lng: float, b_lat: float, b_lng: float, mode: str) -> dict | None:
+    """問 Google 真正的路線要多久。Google 找不到路線就回 None"""
+    resp = requests.post(
+        ROUTES_URL,
+        headers={"X-Goog-Api-Key": MAPS_API_KEY,
+                 "X-Goog-FieldMask": ROUTES_FIELD_MASK},
+        json={
+            "origin": waypoint(a_lat, a_lng),
+            "destination": waypoint(b_lat, b_lng),
+            "travelMode": mode,  # 我們的名字跟 Google 一樣，直接傳
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    routes = resp.json().get("routes", [])
+    if not routes:
+        return None  # 例如：日本的大眾運輸 Google 沒有資料、兩站隔著海
+
+    route = routes[0]
+    seconds = int(route["duration"].rstrip("s"))  # Google 回的是 "1288s" 這種字串
+    return {
+        "distance_meters": route.get("distanceMeters", 0),  # 同一個地點時 Google 不給
+        "duration_minutes": max(1, round(seconds / 60)),  # 再近也至少算 1 分鐘
+        "estimated": False,
+    }
+
+
+def straight_distance_meters(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> float:
+    """兩點之間的直線距離（公尺）。城市裡的距離不長，把地面當成平的來算就夠準"""
+    meters_per_degree = 111_320  # 緯度差 1 度，大約 111 公里
+    dy = (b_lat - a_lat) * meters_per_degree
+    # 經度越往南北兩極越窄，所以要乘上 cos(緯度)
+    dx = (b_lng - a_lng) * meters_per_degree * math.cos(math.radians((a_lat + b_lat) / 2))
+    return math.hypot(dx, dy)  # 畢氏定理：√(dx² + dy²)
+
+
+def straight_estimate(a_lat: float, a_lng: float, b_lat: float, b_lng: float, mode: str) -> dict:
+    """備案：用直線距離估算"""
+    distance = straight_distance_meters(a_lat, a_lng, b_lat, b_lng) * DETOUR
+    minutes = distance / 1000 / SPEED_KMH[mode] * 60
+    if mode == "TRANSIT":
+        minutes += TRANSIT_WAIT_MINUTES
+    return {
+        "distance_meters": round(distance),
+        "duration_minutes": max(1, round(minutes)),
+        "estimated": True,
+    }
+
+
+def estimate_leg(a_lat: float, a_lng: float, b_lat: float, b_lng: float, mode: str) -> dict:
+    """一段路要多久：先問 Google，Google 找不到路線才用直線估算"""
+    route = google_route(a_lat, a_lng, b_lat, b_lng, mode)
+    if route is None:
+        return straight_estimate(a_lat, a_lng, b_lat, b_lng, mode)
+    return route
+```
+
+- `waypoint()`：Google 要的地點格式包了三層（`location` → `latLng` → `latitude`），寫成一個函式，起點、終點都用它。
+- `resp.raise_for_status()`：Google 回 4xx、5xx 就丟出錯誤，交給 router 回 502（跟第 5 段上半的搜尋框一樣）。
+- `if not routes: return None`：找不到路線，回 `None`，`estimate_leg()` 看到 `None` 就改用直線估算。
+- `route["duration"].rstrip("s")`：把 `"4091s"` 右邊的 `s` 去掉，變成 `"4091"`，再用 `int()` 變成數字。
+- `route.get("distanceMeters", 0)`：起點、終點同一個地方時，Google 不給距離，用 `.get` 才不會出錯。
+- `SPEED_KMH[mode]`：用交通方式當 key，從 dict 裡拿速度。
+- `math.hypot(dx, dy)`：就是 `√(dx² + dy²)`。`math.radians`：`cos` 要的是「弧度」，不是「度」，所以先轉換。
+
+#### 步驟 40：新增 `router/legs.py`，掛到 `main.py`，存檔時存交通方式
+
+**新增** `router/legs.py`：
+
+```python
+import requests
+from fastapi import APIRouter, HTTPException, Query
+
+from schemas.leg import LegEstimate, TravelMode
+from services.legs import estimate_leg
+
+router = APIRouter()
+
+
+@router.get("/api/legs/estimate", response_model=LegEstimate)
+def leg_estimate(
+    mode: TravelMode,
+    from_lat: float = Query(ge=-90, le=90),
+    from_lng: float = Query(ge=-180, le=180),
+    to_lat: float = Query(ge=-90, le=90),
+    to_lng: float = Query(ge=-180, le=180),
+):
+    try:
+        return estimate_leg(from_lat, from_lng, to_lat, to_lng, mode)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Google 路線查詢失敗，請稍後再試")
+```
+
+- `mode: TravelMode` 沒有寫 `Query(...)`，FastAPI 一樣會從網址的 `?mode=` 拿，也會檢查是不是那三個字。
+- `except requests.RequestException`：Google 出錯或連不上，回 502 和一句中文，跟 `router/places.py` 一樣。
+
+`main.py` **整個換掉**（多了 `legs`）：
+
+```python
+from fastapi import FastAPI
+from router import destinations, itinerary, legs, search, trips, places
+
+app = FastAPI()
+
+app.include_router(destinations.router)
+app.include_router(search.router)
+app.include_router(trips.router)
+app.include_router(itinerary.router)
+app.include_router(places.router)
+app.include_router(legs.router)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+```
+
+`router/itinerary.py` 的 `save_day` 裡，`item.departure_time = row.departure_time` 的**下面**加一行：
+
+```python
+        item.departure_time = row.departure_time
+        item.travel_mode = row.travel_mode
+```
+
+存檔之後，uvicorn 會自己重開。
+
+#### 步驟 41：先用 `/docs` 測後端
+
+打開 http://localhost:8000/docs：
+
+1. `GET /api/legs/estimate`，填伏見稻荷到清水寺：`mode` 選 `WALK`，`from_lat` 填 `34.9676945`、`from_lng` 填 `135.7791876`、`to_lat` 填 `34.9946662`、`to_lng` 填 `135.784661` → `{"distance_meters": 4726, "duration_minutes": 68, "estimated": false}`（Google 算的，數字可能差一點點）。
+2. `mode` 換成 `DRIVE` → 約 21 分鐘；`TRANSIT` → `"estimated": true`、20 分鐘（Google 沒有日本的大眾運輸資料，改用直線估算）。
+3. `GET /api/trips/{trip_id}/itinerary`，`trip_id` 填 1 → 每一站多了 `"travel_mode": null`。
+
+#### 步驟 42：前端 `app/lib/types.ts`
+
+`ItineraryItem` 換成這樣（多了 `travel_mode`）：
+
+```ts
+// 後端 ItineraryItemOut 的樣子（schemas/itinerary.py）：某一天裡的其中一站
+export type ItineraryItem = {
+  id: number; // 這一站的 id（不是景點的 id）
+  day_index: number;
+  position: number;
+  arrival_time: string | null; // 例如 "09:00:00"
+  departure_time: string | null;
+  travel_mode: TravelMode | null; // 去下一站怎麼去，還沒選是 null
+  destination: Destination; // 這一站是哪個景點
+};
+```
+
+最下面加上：
+
+```ts
+// 交通方式（後端 schemas/leg.py 的 TravelMode）
+export type TravelMode = "WALK" | "DRIVE" | "TRANSIT";
+
+// 後端 GET /api/legs/estimate 回傳的樣子：一段路大概要多久
+export type LegEstimate = {
+  distance_meters: number;
+  duration_minutes: number;
+  estimated: boolean; // true：直線距離估算的
+};
+```
+
+#### 步驟 43：前端 `app/lib/api.ts`
+
+**① 最上面的 `import type`** 整段換成：
+
+```ts
+import type {
+  Destination,
+  ItineraryItem,
+  LegEstimate,
+  PlaceSuggestion,
+  SearchResponse,
+  TravelMode,
+  Trip,
+  TripCreate,
+} from "@/app/lib/types";
+```
+
+**② `saveDayItinerary`** 整個換掉（多了 `travel_mode`）：
+
+```ts
+// 儲存某一天：這一天的每一站照新的順序排好，每一站帶著自己的時間
+// （後端 schemas/itinerary.py 的 ItineraryDaySave）
+export function saveDayItinerary(
+  tripId: number,
+  day: number,
+  items: ItineraryItem[],
+) {
+  return apiFetch<ItineraryItem[]>(
+    `/api/trips/${tripId}/days/${day}/itinerary`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        items: items.map((item) => ({
+          id: item.id,
+          arrival_time: item.arrival_time,
+          departure_time: item.departure_time,
+          travel_mode: item.travel_mode,
+        })),
+      }),
+    },
+  );
+}
+```
+
+**③ 最下面**加上：
+
+```ts
+// 一段路（from → to）用某種交通方式，大概要多久
+export function estimateLeg(
+  from: Destination,
+  to: Destination,
+  mode: TravelMode,
+) {
+  const params = new URLSearchParams({
+    mode,
+    from_lat: String(from.lat),
+    from_lng: String(from.lng),
+    to_lat: String(to.lat),
+    to_lng: String(to.lng),
+  });
+  return apiFetch<LegEstimate>(`/api/legs/estimate?${params}`);
+}
+```
+
+`URLSearchParams`：把一個物件變成網址後面的 `mode=WALK&from_lat=34.96…`，會自動幫你編碼，跟第 5 段上半的 `encodeURIComponent` 是同一件事。
+
+#### 步驟 44：新增 `app/components/LegInfo.tsx`
+
+```tsx
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+
+import { estimateLeg } from "@/app/lib/api";
+import type { ItineraryItem, TravelMode } from "@/app/lib/types";
+
+const MODE_LABELS: Record<TravelMode, string> = {
+  WALK: "走路",
+  DRIVE: "開車",
+  TRANSIT: "大眾運輸",
+};
+
+// 75 → 「1 小時 15 分」
+function formatMinutes(minutes: number) {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h} 小時 ${m} 分` : `${m} 分`;
+}
+
+// 3957 → 「4.0 公里」，800 → 「800 公尺」
+function formatDistance(meters: number) {
+  return meters >= 1000
+    ? `${(meters / 1000).toFixed(1)} 公里`
+    : `${meters} 公尺`;
+}
+
+type Props = {
+  from: ItineraryItem; // 這一站
+  to: ItineraryItem; // 下一站
+  onModeChange: (mode: TravelMode | null) => void;
+};
+
+// 這一站到下一站：選交通方式，顯示大概要多久
+export default function LegInfo({ from, to, onModeChange }: Props) {
+  const mode = from.travel_mode;
+  const a = from.destination;
+  const b = to.destination;
+  const ready =
+    mode !== null &&
+    a.lat !== null &&
+    a.lng !== null &&
+    b.lat !== null &&
+    b.lng !== null;
+
+  const legQuery = useQuery({
+    // 座標或交通方式變了（例如拖拉換了下一站），key 就變了，會自動重算
+    queryKey: ["leg", a.lat, a.lng, b.lat, b.lng, mode],
+    queryFn: () => estimateLeg(a, b, mode!),
+    enabled: ready,
+    staleTime: Infinity, // 同樣的兩點、同樣的交通方式，答案幾乎不會變，不用一直花 Google 的額度
+  });
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+      <span>↓ 到下一站</span>
+      <select
+        value={mode ?? ""}
+        onChange={(e) =>
+          onModeChange((e.target.value || null) as TravelMode | null)
+        }
+        aria-label="到下一站的交通方式"
+        className="rounded border border-gray-300 px-1 py-0.5"
+      >
+        <option value="">選交通方式</option>
+        <option value="WALK">{MODE_LABELS.WALK}</option>
+        <option value="DRIVE">{MODE_LABELS.DRIVE}</option>
+        <option value="TRANSIT">{MODE_LABELS.TRANSIT}</option>
+      </select>
+      {ready && legQuery.isPending && <span>計算中…</span>}
+      {legQuery.isError && (
+        <span className="text-red-600">{legQuery.error.message}</span>
+      )}
+      {ready && legQuery.data && (
+        <span>
+          約 {formatMinutes(legQuery.data.duration_minutes)}・
+          {formatDistance(legQuery.data.distance_meters)}
+          {legQuery.data.estimated && "（直線估算）"}
+        </span>
+      )}
+    </div>
+  );
+}
+```
+
+- `Record<TravelMode, string>`：一個物件，key 一定要是那三種交通方式，值是字串。少寫一個，TypeScript 就會報錯。
+- `mode!`：第 2 段學過的「這裡一定不是 `null`」。`enabled: ready` 保證了沒選交通方式時不會執行。
+
+#### 步驟 45：`app/components/SortableStop.tsx` 整個換掉
+
+多了 `next`（下一站）、`onModeChange`，時間下面放 `LegInfo`：
+
+```tsx
+"use client";
+
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+
+import LegInfo from "@/app/components/LegInfo";
+import type { ItineraryItem, TimeField, TravelMode } from "@/app/lib/types";
+
+type Props = {
+  item: ItineraryItem;
+  index: number; // 在畫面上排第幾個（從 0 開始）。編號用它，不用 position（可能跳號）
+  next: ItineraryItem | undefined; // 下一站；最後一站沒有
+  onTimeChange: (field: TimeField, value: string | null) => void;
+  onModeChange: (mode: TravelMode | null) => void;
+  onRemove: () => void;
+  removeDisabled: boolean;
+};
+
+// 後端回 "09:00:00"，時間輸入框要的是 "09:00"
+function toInputValue(time: string | null) {
+  return time?.slice(0, 5) ?? "";
+}
+
+// 每日行程裡可以拖拉的一站
+export default function SortableStop({
+  item,
+  index,
+  next,
+  onTimeChange,
+  onModeChange,
+  onRemove,
+  removeDisabled,
+}: Props) {
+  // 跟 dnd-kit 說「這一列可以拖」，名字用這一站的 id
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id });
+
+  return (
+    <li
+      ref={setNodeRef} // 被拖著走的是這個 <li>
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={`flex items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 ${
+        isDragging ? "relative z-10 shadow-lg" : ""
+      }`}
+    >
+      {/* 把手：只有按住這裡才能拖，時間框和 ✕ 才點得到 */}
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        title="按住拖拉排序"
+        className="cursor-grab touch-none px-1 text-xl text-gray-400 active:cursor-grabbing"
+      >
+        ⠿
+      </button>
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
+        {index + 1}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold">{item.destination.place_name}</p>
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-sm text-gray-500">
+          <input
+            type="time"
+            value={toInputValue(item.arrival_time)}
+            onChange={(e) =>
+              onTimeChange("arrival_time", e.target.value || null)
+            }
+            aria-label="抵達時間"
+            className="rounded border border-gray-300 px-1"
+          />
+          ～
+          <input
+            type="time"
+            value={toInputValue(item.departure_time)}
+            onChange={(e) =>
+              onTimeChange("departure_time", e.target.value || null)
+            }
+            aria-label="離開時間"
+            className="rounded border border-gray-300 px-1"
+          />
+        </div>
+        {next && <LegInfo from={item} to={next} onModeChange={onModeChange} />}
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={removeDisabled}
+        title="刪掉這一站"
+        className="px-1 text-gray-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-gray-400"
+      >
+        ✕
+      </button>
+    </li>
+  );
+}
+```
+
+`{next && <LegInfo ... />}`：有下一站才顯示。最後一站的 `next` 是 `undefined`，就不顯示。
+
+#### 步驟 46：`app/trips/[tripId]/page.tsx` 改三個地方
+
+**① 最上面的 `import type`** 多一個 `TravelMode`：
+
+```tsx
+import type { ItineraryItem, TimeField, TravelMode } from "@/app/lib/types";
+```
+
+**② `changeTime` 函式的下面**，加上 `changeMode`：
+
+```tsx
+  function changeMode(itemId: number, mode: TravelMode | null) {
+    setDraft(
+      dayItems.map((item) =>
+        item.id === itemId ? { ...item, travel_mode: mode } : item,
+      ),
+    );
+  }
+```
+
+跟 `changeTime` 一樣：複製一份，只換掉那一站的 `travel_mode`，放進草稿。
+
+**③ `<SortableStop` 那一段**，多兩行（`next`、`onModeChange`）：
+
+```tsx
+                  <SortableStop
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    next={dayItems[index + 1]}
+                    onTimeChange={(field, value) =>
+                      changeTime(item.id, field, value)
+                    }
+                    onModeChange={(mode) => changeMode(item.id, mode)}
+                    onRemove={() => removeItem.mutate(item.id)}
+                    removeDisabled={dirty}
+                  />
+```
+
+`dayItems[index + 1]`：下一站。最後一站的 `index + 1` 超出陣列，拿到的是 `undefined`。
+
+#### 步驟 47：測試
+
+確認 uvicorn、`npm run dev` 都在跑，打開**我的行程 → 京都三日遊 → 第 1 天**。
+
+1. 伏見稻荷、清水寺、花見小路下面都多了「**↓ 到下一站 [選交通方式]**」；最後一站銀閣寺**沒有**。
+2. 伏見稻荷選「**走路**」→ 出現「約 1 小時 8 分・4.7 公里」，上面出現黃色提示。
+3. 改成「開車」→ 約 21 分；「大眾運輸」→「約 20 分・4.0 公里（直線估算）」。
+4. 打開 F12 → **Network**，清空，再把伏見稻荷改回「走路」→ **沒有**新的 `estimate` 請求（用快取）。
+5. 清水寺選「大眾運輸」、花見小路選「走路」→ 按「**儲存**」→ 按 **F5** 重新整理 → 三個交通方式都還在。
+6. **拖拉**：把銀閣寺拖到伏見稻荷**下面**（第 2 個）→ 伏見稻荷的下一站變成銀閣寺，時間**自己重新算**，變成「約 2 小時 5 分・8.9 公里」；花見小路變成最後一站，那一行不見了。按「取消」。
+7. 第 2 天只有八坂神社一站 → 沒有「到下一站」。
+
+### 3. 這一段結束後的資料夾
+
+```
+backend/
+├── alembic/versions/
+│   └── xxxx_add_travel_mode_to_itinerary_items.py ← 新增（Alembic 產生的）
+├── main.py                ← 改：掛上 legs
+├── models.py              ← 改：ItineraryItem 加 travel_mode
+├── router/
+│   ├── itinerary.py       ← 改：存檔時存 travel_mode
+│   └── legs.py            ← 新增：GET /api/legs/estimate
+├── schemas/
+│   ├── itinerary.py       ← 改：travel_mode
+│   └── leg.py             ← 新增：TravelMode、LegEstimate
+└── services/
+    └── legs.py            ← 新增：問 Google Routes API，找不到路線才直線估算
+
+frontend/app/
+├── components/
+│   ├── LegInfo.tsx        ← 新增：交通方式 ＋ 估算時間
+│   └── SortableStop.tsx   ← 改：放上 LegInfo
+├── lib/
+│   ├── api.ts             ← 改：存 travel_mode、estimateLeg
+│   └── types.ts           ← 改：travel_mode、TravelMode、LegEstimate
+└── trips/[tripId]/
+    └── page.tsx           ← 改：changeMode
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 交通方式存在哪 | 另一張表 `itinerary_legs`，一筆是「A 站 → B 站」 | `itinerary_items` 加一欄 `travel_mode`（從這一站去下一站） |
+| 時間、距離 | 前端用 Google Routes 算好，存檔時一起存進 `itinerary_legs` | 不存，每次問後端的 `estimate_leg()` |
+| 怎麼算 | Google Routes API（真正的路線） | 一樣用 Google Routes API；Google 找不到路線（例如日本的大眾運輸）才用直線估算 |
+| 拖拉換了順序 | 舊的「A → B」用不到了，新的那一段要重選 | 交通方式跟著那一站走，時間自動重算 |
+| 交通方式的名字 | `DRIVING`、`WALKING`、`TRANSIT`（瀏覽器裡 Google 地圖程式用的名字） | `DRIVE`、`WALK`、`TRANSIT`（後端呼叫 Routes API 用的名字） |
+| 顯示在哪 | 兩站中間一個獨立的框 | 每一站卡片的最下面 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| `alembic revision` 產生的檔案，`upgrade()` 裡是 `pass` | `models.py` 沒存檔，或欄位加錯 class | 對照步驟 36，把空的那個檔案刪掉再產生一次 |
+| 讀每日行程或存檔回 500，uvicorn 終端機寫 `column itinerary_items.travel_mode does not exist` | 遷移檔產生了，但還沒套用到資料庫 | 跑 `uv run alembic upgrade head` |
+| `/docs` 沒有 `/api/legs/estimate` | `main.py` 沒有 `include_router(legs.router)` | 對照步驟 40 |
+| 選了交通方式，重新整理就不見 | `router/itinerary.py` 沒加 `item.travel_mode = row.travel_mode`，或 `api.ts` 的 `saveDayItinerary` 沒送 `travel_mode` | 對照步驟 40、43 |
+| 選了交通方式，一直沒有時間 | `api.ts` 沒有 `estimateLeg`，或後端沒掛 `legs` | 看 F12 Console 的紅字 |
+| 每一站都沒有「到下一站」 | `page.tsx` 沒傳 `next={dayItems[index + 1]}` | 對照步驟 46 |
+| 日本的大眾運輸，後面總是「（直線估算）」 | Google 沒有日本的大眾運輸資料，回的是空的 | 正常，這就是備案的用途 |
+| 隔著海的兩站，開車算出幾十個小時（直線估算） | Google 找不到路線，改用直線估算；直線估算不知道中間隔著海 | 正常，所以畫面上寫「（直線估算）」 |
+| 「計算中…」過了好幾秒，變成紅字「Google 路線查詢失敗」 | 後端問 Google 出錯；前端會先自動重試 3 次，所以要等幾秒 | 看 uvicorn 終端機；確認 `backend/.env` 的 `MAPS_API_KEY`，以及 Google Cloud 有啟用 Routes API |
+| 自己寫的小腳本打 Google 回 `403 Permission denied on the service`，網站卻正常 | 腳本不在 `backend/` 裡。`load_dotenv()` 是從**腳本檔案所在的資料夾**往上找 `.env`，不是從你執行指令的地方找；找不到也不會報錯，請求就沒帶金鑰 | 寫清楚路徑：`load_dotenv("backend/.env 的完整路徑")`，或把腳本放進 `backend/` |
+
+### 📌 這一段的 3 個重點
+
+1. **選的存，算得出來的不存**：交通方式是使用者選的，存；時間、距離算得出來，而且順序一改就過期，不存。
+2. **「找不到」和「出錯」分開處理**：Google 說沒有路線 → 用直線估算當備案；Google 出錯 → 回 502 老實顯示，不要偷偷藏起來。
+3. **`queryKey` 放所有會影響結果的東西**：座標、交通方式一變，自動重算；變回來就用快取。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 為什麼交通方式要存，但「要花多久」不存？
+2. 如果 `queryKey` 只寫 `["leg", from.id]`（這一站的 id），拖拉換了下一站之後會怎樣？
+3. 如果 Google 找不到路線時，後端也當成出錯、回 502，京都的大眾運輸會顯示什麼？為什麼這樣不好？
+4. `travel_mode` 為什麼要用 `Literal["WALK", "DRIVE", "TRANSIT"]`，不直接用 `str`？
+
+<details>
+<summary>點開看解答</summary>
+
+1. 交通方式是使用者**選的**，系統猜不出來，不存就不見了。「要花多久」只要有兩站的座標和交通方式就**算得出來**；而且順序一改，下一站就換了，存起來的時間馬上變成錯的，還得記得去更新。不存，每次算，就永遠是對的。
+2. 時間**不會重算**，會一直顯示舊的下一站的時間。因為 key 沒變，TanStack Query 以為是同一份資料，直接拿小白板上的。`queryKey` 要包含所有會影響結果的東西：兩邊的座標和交通方式。
+3. 會一直顯示紅字「Google 路線查詢失敗，請稍後再試」。但 Google 根本沒壞，它只是沒有日本的大眾運輸資料，「稍後再試」幾次都一樣，使用者永遠看不到時間。「找不到路線」是 Google 正常的回答，應該用備案；只有真的出錯才顯示錯誤。
+4. 用 `str` 的話，`BIKE`、`walk`、`走路` 什麼都能存進去，前端拿到不認得的值就不知道怎麼顯示，Google 也不認得（回 400），`SPEED_KMH[mode]` 也會找不到而出錯（500）。`Literal` 讓 FastAPI 在門口就擋掉，回 422，資料庫裡永遠只有這三種。
+
+</details>
+
+#### 你的實作紀錄（2026-11-14）
+
+- 後端 8 個檔案（`models.py`、遷移檔、`schemas/leg.py`、`schemas/itinerary.py`、`services/legs.py`、`router/legs.py`、`main.py`、`router/itinerary.py`）、前端 5 個檔案（`types.ts`、`api.ts`、`LegInfo.tsx`、`SortableStop.tsx`、`page.tsx`）都正確。差別只有：`types.ts` 的 `travel_mode` 少了說明註解；`services/legs.py` 算 `dx` 那行被編輯器折成兩行，用 `\` 接起來，功能一樣。
+- 型別檢查、lint 都通過。遷移檔的 `upgrade()` 只有 `add_column` 一行，資料庫已經在最新版（`ddabbd182919 (head)`）。
+- 對你開著的後端打 API（只讀，沒動到資料庫）：
+  - 伏見稻荷 → 清水寺，走路：`4726` 公尺、`68` 分，`estimated: false`（Google 算的）。
+  - 同一段，大眾運輸，經過前端 3000 轉送：`3957` 公尺、`20` 分，`estimated: true`（直線估算）。
+  - `mode=BIKE`：回 `422`，FastAPI 在門口就擋掉了（小測驗第 4 題）。
+- 你的資料庫（只讀）：京都三日遊第 1 天，清水寺存了 `TRANSIT`、花見小路存了 `WALK`，代表存檔有把交通方式存進去。伏見稻荷、銀閣寺、第 2 天的八坂神社是空的（`null`）。
+- 步驟 47 的測試你做完了（2026-11-14），第 7 課完成。
+- 順便清掉了 `pyproject.toml` 裡多餘的 `dogs` 套件（`uv remove dogs`）。它是第 1～3 課裝 `ddgs` 時打錯字裝進來的測試用空殼套件，沒有程式在用。

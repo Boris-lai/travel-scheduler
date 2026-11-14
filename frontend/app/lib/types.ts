@@ -41,6 +41,7 @@ export type ItineraryItem = {
   position: number;
   arrival_time: string | null; // 例如 "09:00:00"
   departure_time: string | null;
+  travel_mode: TravelMode | null; // 從這一站到下一站怎麼去；還沒選是 null，最後一站用不到
   destination: Destination; // 這一站是哪個景點
 };
 
@@ -52,4 +53,14 @@ export type PlaceSuggestion = {
   google_place_id: string;
   name: string; // 例如「金閣寺」
   detail: string | null; // 例如「日本京都府京都市北區……」
+};
+
+// 交通方式（後端 schemas/leg.py 的 TravelMode）
+export type TravelMode = "WALK" | "DRIVE" | "TRANSIT";
+
+// 後端 GET /api/legs/estimate 回傳的樣子：一段路大概要多久
+export type LegEstimate = {
+  distance_meters: number;
+  duration_minutes: number;
+  estimated: boolean; // true：直線距離估算的
 };

@@ -150,6 +150,7 @@ def save_day(
         item.position = new_position
         item.arrival_time = row.arrival_time
         item.departure_time = row.departure_time
+        item.travel_mode = row.travel_mode
 
     db.commit()  # 全部都改好了，才一次存檔
     return day_items(db, trip_id, day_index)

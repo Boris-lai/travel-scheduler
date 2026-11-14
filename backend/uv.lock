@@ -71,7 +71,6 @@ dependencies = [
     { name = "alembic" },
     { name = "celery", extra = ["redis"] },
     { name = "ddgs" },
-    { name = "dogs" },
     { name = "fastapi" },
     { name = "google-genai" },
     { name = "psycopg", extra = ["binary"] },
@@ -86,7 +85,6 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.20.1" },
     { name = "celery", extras = ["redis"], specifier = ">=5.6.3" },
     { name = "ddgs", specifier = ">=9.16.1" },
-    { name = "dogs", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.159.1" },
     { name = "google-genai", specifier = ">=2.33.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
@@ -459,12 +457,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/fc/f8/98eea607f65de6527
 wheels = [
     { url = "https://files.pythonhosted.org/packages/12/b3/231ffd4ab1fc9d679809f356cebee130ac7daa00d6d6f3206dd4fd137e9e/distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2", size = 20277, upload-time = "2023-12-24T09:54:30.421Z" },
 ]
-
-[[package]]
-name = "dogs"
-version = "1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b3/18/ee5825905642699d620b1b54287c28a106abb280cdae170a34fc6ac7de14/dogs-1.0.tar.gz", hash = "sha256:c4702ca6e751f3bcf69edfbba47fffd85b9488b4f2dbd2844ba14ae0858b0922", size = 517, upload-time = "2014-02-08T10:33:25.728Z" }
 
 [[package]]
 name = "fastapi"
