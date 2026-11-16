@@ -64,3 +64,23 @@ export type LegEstimate = {
   duration_minutes: number;
   estimated: boolean; // true：直線距離估算的
 };
+
+// 後端 UserOut 的樣子（schemas/auth.py）：登入的會員
+export type User = {
+  id: number;
+  email: string;
+  name: string;
+};
+
+// 註冊時要送的資料（schemas/auth.py 的 SignupIn）
+export type SignupInput = {
+  email: string;
+  password: string;
+  name: string;
+};
+
+// 登入時要送的資料（schemas/auth.py 的 LoginIn）
+export type LoginInput = {
+  email: string;
+  password: string;
+};

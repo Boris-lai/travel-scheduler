@@ -15,7 +15,7 @@
 | 5 | 前端入門（Next.js）＋ 搜尋頁 | [lesson-05.md](lesson-05.md) | ✅ 完成 |
 | 6 | 行程後端（行程、景點池、每日行程 API） | [lesson-06.md](lesson-06.md) | ✅ 完成 |
 | 7 | 編輯頁（拖拉 ＋ 地圖） | [lesson-07.md](lesson-07.md) | ✅ 完成 |
-| 8 | 登入、權限、分享 | [lesson-08.md](lesson-08.md) | 🚧 進行中（第 1 段 ✅） |
+| 8 | 登入、權限、分享 | [lesson-08.md](lesson-08.md) | 🚧 進行中（第 1、2 段 ✅） |
 | 9 | 畫面美化（照片、動畫、通知、導覽、首頁大圖） | — | ⏳ |
 | 10 | 部署 | — | ⏳ |
 
@@ -47,4 +47,7 @@
 | 密碼雜湊 | `passlib` ＋ Argon2 | `pwdlib` ＋ Argon2（跟 todo-app 一樣） | 第 8 課 |
 | 註冊的 Email | 照原樣存，大小寫不同算兩個帳號 | 一律轉小寫 | 第 8 課 |
 | 登入時 Email 不存在 | 馬上回 401，從時間差猜得出有沒有這個帳號 | 用假的雜湊照樣比對一次，時間差不多 | 第 8 課 |
+| 「我是誰」記在哪 | `AuthContext`（`useState` ＋ `useEffect` ＋ Context） | TanStack Query 的 `["me"]`，用 `useMe()` 拿 | 第 8 課 |
+| 登入畫面 | 導覽列打開的彈出視窗 | 獨立的 `/login` 頁 | 第 8 課 |
+| 登出後 | `window.location.href = "/"`，整個網站重新載入 | `resetQueries()` 擦掉小白板 ＋ `router.push("/")` | 第 8 課 |
 | 雲端主機 | EC2 ＋ RDS | Lightsail 或 EC2，**第 10 課再決定** | 第 10 課 |

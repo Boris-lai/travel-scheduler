@@ -2,11 +2,14 @@ import type {
   Destination,
   ItineraryItem,
   LegEstimate,
+  LoginInput,
   PlaceSuggestion,
   SearchResponse,
+  SignupInput,
   TravelMode,
   Trip,
   TripCreate,
+  User,
 } from "@/app/lib/types";
 
 // 所有 API 共用的小幫手：送出請求 → 檢查有沒有成功 → 把回應變成物件
@@ -151,4 +154,30 @@ export function estimateLeg(
     to_lng: String(to.lng),
   });
   return apiFetch<LegEstimate>(`/api/legs/estimate?${params}`);
+}
+
+// ---------- 會員 ----------
+// cookie（手環）不用自己帶：網址跟網頁同一個網站，瀏覽器每次都會自動帶上
+
+// 我是誰：沒登入回 null
+export function getMe() {
+  return apiFetch<User | null>("/api/me");
+}
+
+export function signup(input: SignupInput) {
+  return apiFetch<User>("/api/signup", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function login(input: LoginInput) {
+  return apiFetch<User>("/api/login", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function logout() {
+  return apiFetch<void>("/api/logout", { method: "POST" });
 }

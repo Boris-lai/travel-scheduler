@@ -1,6 +1,6 @@
 # 第 8 課：登入、權限、分享
 
-> **狀態**：第 1 段（後端：註冊、登入、登出）✅
+> **狀態**：第 1 段（後端：註冊、登入、登出）✅ ／ 第 2 段（前端：登入／註冊畫面）✅
 > **日期**：2026-11-14 ～
 > **對照原專案**：`backend/core/security.py`、`backend/core/dependencies.py`、`backend/router/auth.py`、`backend/schemas/auth.py`、`backend/router/share.py`、`frontend/app/context/AuthContext.tsx`、`frontend/app/components/layout/AuthCorner.tsx`、`frontend/app/lib/tripIndex.ts`
 
@@ -604,3 +604,516 @@ backend/
 - 你的資料庫（只讀）：`users` 有 1 筆，Email 是小寫，密碼存的是 97 個字的 Argon2 雜湊。名字是「你的名字」：步驟 9 ① 的範例照原樣送出去了，第 2 段右上角會顯示「你的名字」，想改的話看下面。
 - 你的 Redis（只讀，號碼沒有印出來）：有 1 個 session，值是會員 1 號，剩大約 14 天。代表步驟 9 最後有重新登入回來。
 - 打你開著的後端：不帶 cookie 問 `/api/me` → `null`；用不存在的 Email 登入 → `401`；`/docs` 裡有 4 支新 API。
+
+---
+
+## 第 2 段：前端：登入／註冊畫面
+
+### 開始前的測試結果（2026-11-16）
+
+我先在另一份複製的前端（3100）＋ 後端（8100）測過，這次用 `puppeteer-core` 讓 Chrome 自動操作：
+
+| 測試 | 結果 |
+|---|---|
+| 沒登入打開網站 | 導覽列右邊是「登入／註冊」 |
+| 密碼打錯 | 表單下面紅字「Email 或密碼錯誤」 |
+| 登入成功 | 跳到「我的行程」，右邊變成「哈囉，Boris」和「登出」。登入之後**沒有**再打一次 `/api/me` |
+| cookie | `sid` 是 `HttpOnly`；在網頁上執行 `document.cookie` 看不到它 |
+| 按 F5 | 還是登入的狀態 |
+| 開兩個分頁，在第二個分頁登出 | 切回第一個分頁，右邊**自己**變成「登入／註冊」 |
+| 在「我的行程」按登出 | 回到首頁，cookie 不見了 |
+| 註冊「測試二號」 | 直接登入，右邊變成「哈囉，測試二號」 |
+| 用 `TEST2@example.com`（大寫）再註冊 | 紅字「這個 Email 已經註冊過了」；切換到登入，紅字就消失 |
+| 註冊時密碼只打 7 個字 | 瀏覽器自己擋下來（「請將這段文字加長到 8 個字元以上」），**沒有**送出請求 |
+| Email 打 `not-an-email` | 瀏覽器自己擋下來 |
+| 主控台 | 只有密碼錯（401）、重複註冊（409）那兩行紅字，是瀏覽器自己印的，正常 |
+
+### 1. 學到的觀念
+
+#### 前端怎麼知道「我是誰」
+
+手環（cookie）是 `HttpOnly`，前端的 JavaScript **讀不到**。所以前端沒辦法自己看手環，只能問後端：「我是誰？」（`GET /api/me`），後端看了手環，回答「小明」或 `null`。
+
+導覽列、登入頁，第 3、4 段的「我的行程」都需要知道答案，所以寫成一個小工具 `useMe()`：
+
+```ts
+export function useMe() {
+  return useQuery({ queryKey: ["me"], queryFn: getMe });
+}
+```
+
+每個地方都呼叫 `useMe()`，因為 `queryKey` 一樣，拿到的是**小白板上同一份**資料（跟第 7 課景點池和 Google 搜尋框共用 `["tripPlaces", tripId]` 是同一招）。原專案是自己用 `useState` ＋ `useEffect` ＋ Context 寫一套，我們用 TanStack Query 的快取就夠了。
+
+`useQuery` 還有一個預設的好處：**切回這個分頁時，會再問一次**。所以在另一個分頁登出，切回來就知道了（開始前的測試第 6 行）。
+
+#### cookie 不用自己帶
+
+`api.ts` 裡打 `/api/me`、`/api/login`，都**沒有**寫任何跟 cookie 有關的程式。因為：
+
+```
+瀏覽器 ──► localhost:3000/api/login ──► Next.js 轉給 localhost:8000/api/login
+        ◄── set-cookie: sid=... ◄────── 後端發手環
+```
+
+第 5 課設定的轉送（`next.config.ts` 的 `rewrites`），讓瀏覽器以為一直在跟 **3000 同一個網站**講話：
+
+- 後端回的 `set-cookie`，Next.js 會原封不動轉給瀏覽器，瀏覽器就存起來。
+- 之後打 `/api/...`，瀏覽器看到是同一個網站，就**自動**帶上 cookie。
+
+如果前端直接打 `localhost:8000`（不同的網址），就要多寫 `credentials: "include"`，後端也要設定 CORS 允許帶 cookie。我們從第 5 課就用轉送，所以這些都不用。
+
+#### 登入成功：直接放上小白板
+
+```ts
+onSuccess: (user) => {
+  queryClient.setQueryData(["me"], user);
+  router.push("/trips");
+},
+```
+
+`/api/login` 本來就會回會員資料，所以用 `setQueryData` **直接寫上小白板**，不用再問一次 `/api/me`。導覽列用的是同一份 `["me"]`，馬上就換成名字。
+
+#### 登出：小白板全部擦掉
+
+```ts
+onSuccess: () => {
+  queryClient.resetQueries();
+  router.push("/");
+},
+```
+
+小白板上可能有上一個人的資料（第 3 段開始就是「他的行程」）。如果下一個人在同一台電腦登入，不能讓他看到。`resetQueries()` 把小白板**全部清回空白**，畫面上正在用的會重新去問後端（`["me"]` 重問就變成 `null`）。
+
+原專案是用 `window.location.href = "/"`，讓整個網站重新載入。效果一樣，但 Next.js 的 lint 會警告這種換頁方式，所以我們用 `router.push`，自己把小白板擦掉。
+
+#### 瀏覽器先擋一次，後端才是真的關卡
+
+輸入框加了 `type="email"`、`required`、`minLength={8}`，資料不對，瀏覽器就**不會送出**，馬上提示使用者，不用等後端回 422。
+
+但這只是**方便**，不是保護：有人可以不透過網頁，直接用 `/docs` 或 `curl` 打 API。所以第 1 段後端的 `EmailStr`、`Field(min_length=8)` 一定要留著，那才是真的關卡。
+
+### 2. 實作步驟
+
+這一段**只改前端**。開始前確認 uvicorn 和 `npm run dev` 都在跑。
+
+#### 步驟 10：`app/lib/types.ts` 最下面加上
+
+```ts
+// 後端 UserOut 的樣子（schemas/auth.py）：登入的會員
+export type User = {
+  id: number;
+  email: string;
+  name: string;
+};
+
+// 註冊時要送的資料（schemas/auth.py 的 SignupIn）
+export type SignupInput = {
+  email: string;
+  password: string;
+  name: string;
+};
+
+// 登入時要送的資料（schemas/auth.py 的 LoginIn）
+export type LoginInput = {
+  email: string;
+  password: string;
+};
+```
+
+#### 步驟 11：`app/lib/api.ts`
+
+**① 最上面的 `import type`** 整段換成：
+
+```ts
+import type {
+  Destination,
+  ItineraryItem,
+  LegEstimate,
+  LoginInput,
+  PlaceSuggestion,
+  SearchResponse,
+  SignupInput,
+  TravelMode,
+  Trip,
+  TripCreate,
+  User,
+} from "@/app/lib/types";
+```
+
+**② 最下面**加上：
+
+```ts
+// ---------- 會員 ----------
+// cookie（手環）不用自己帶：網址跟網頁同一個網站，瀏覽器每次都會自動帶上
+
+// 我是誰：沒登入回 null
+export function getMe() {
+  return apiFetch<User | null>("/api/me");
+}
+
+export function signup(input: SignupInput) {
+  return apiFetch<User>("/api/signup", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function login(input: LoginInput) {
+  return apiFetch<User>("/api/login", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function logout() {
+  return apiFetch<void>("/api/logout", { method: "POST" });
+}
+```
+
+#### 步驟 12：新增 `app/lib/useMe.ts`
+
+```ts
+import { useQuery } from "@tanstack/react-query";
+
+import { getMe } from "@/app/lib/api";
+
+// 我是誰：每個用到的地方都呼叫 useMe()，拿到的是小白板上同一份資料（queryKey 一樣）
+export function useMe() {
+  return useQuery({
+    queryKey: ["me"],
+    queryFn: getMe,
+  });
+}
+```
+
+這個檔案沒有 `"use client"`：它不是元件，只是一個給元件用的工具。用到它的元件（`AuthCorner`、登入頁）有寫就好。
+
+#### 步驟 13：新增 `app/components/AuthCorner.tsx`
+
+```tsx
+"use client";
+
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+import { logout } from "@/app/lib/api";
+import { useMe } from "@/app/lib/useMe";
+
+// 導覽列右邊：沒登入顯示「登入／註冊」，登入了顯示名字和「登出」
+export default function AuthCorner() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const { data: me, isPending } = useMe();
+
+  const logoutMutation = useMutation({
+    mutationFn: logout,
+    onSuccess: () => {
+      // 小白板上的資料可能是上一個人的（例如他的行程）：全部清回空白，畫面上正在用的會重新抓
+      queryClient.resetQueries();
+      router.push("/");
+    },
+  });
+
+  // 還不知道有沒有登入：先什麼都不顯示，免得「登入」閃一下又變成名字
+  if (isPending) return null;
+
+  if (!me) {
+    return (
+      <Link href="/login" className="hover:text-blue-600">
+        登入／註冊
+      </Link>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <span className="font-normal text-gray-500">哈囉，{me.name}</span>
+      <button
+        type="button"
+        onClick={() => logoutMutation.mutate()}
+        disabled={logoutMutation.isPending}
+        className="rounded-lg px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+      >
+        登出
+      </button>
+    </div>
+  );
+}
+```
+
+- `if (isPending) return null`：剛打開網頁，還沒問到答案時，什麼都不顯示。不然會先閃一下「登入／註冊」，再變成「哈囉，小明」。
+- 登出按鈕用 `useMutation`，跟第 7 課的刪除行程一樣。
+
+#### 步驟 14：`app/layout.tsx` 改兩個地方
+
+**① import** 多一行（放在 `Providers` 那行的上面）：
+
+```tsx
+import AuthCorner from "@/app/components/AuthCorner";
+import Providers from "@/app/providers";
+```
+
+**② `<nav>` 裡面那個 `<div>`** 整個換掉（多了 `items-center` 和最後的 `AuthCorner`）：
+
+```tsx
+            <div className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-3 font-semibold">
+              <Link href="/" className="hover:text-blue-600">
+                搜尋景點
+              </Link>
+              <Link href="/trips" className="hover:text-blue-600">
+                我的行程
+              </Link>
+              {/* ml-auto：把登入那一塊推到最右邊 */}
+              <div className="ml-auto">
+                <AuthCorner />
+              </div>
+            </div>
+```
+
+`ml-auto`：左邊的空間全部撐開，把登入那一塊推到最右邊。
+
+#### 步驟 15：新增 `app/login/page.tsx`
+
+資料夾 `login` 要自己建，網址就是 `/login`（第 7 課學過：資料夾就是網址）。
+
+```tsx
+"use client";
+
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { login, signup } from "@/app/lib/api";
+
+export default function LoginPage() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const isLogin = mode === "login";
+
+  const submit = useMutation({
+    mutationFn: () =>
+      isLogin
+        ? login({ email, password })
+        : signup({ email, password, name: name.trim() }),
+    onSuccess: (user) => {
+      // 後端已經用 cookie 發了手環。回來的會員資料直接放上小白板，導覽列馬上換成名字
+      queryClient.setQueryData(["me"], user);
+      router.push("/trips");
+    },
+  });
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    submit.mutate();
+  }
+
+  function switchMode() {
+    setMode(isLogin ? "signup" : "login");
+    submit.reset(); // 換模式時，清掉上一次的錯誤訊息
+  }
+
+  return (
+    <main className="mx-auto max-w-sm p-6">
+      <h1 className="mb-6 text-3xl font-bold">{isLogin ? "登入" : "註冊"}</h1>
+
+      <form
+        onSubmit={handleSubmit}
+        className="flex flex-col gap-4 rounded-xl bg-white p-6 shadow"
+      >
+        {!isLogin && (
+          <label className="flex flex-col gap-1 text-sm">
+            名字
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              maxLength={30}
+              className="rounded-lg border border-gray-300 px-3 py-2"
+            />
+          </label>
+        )}
+        <label className="flex flex-col gap-1 text-sm">
+          Email
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            autoComplete="email"
+            className="rounded-lg border border-gray-300 px-3 py-2"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          {isLogin ? "密碼" : "密碼（至少 8 個字）"}
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            minLength={isLogin ? undefined : 8}
+            maxLength={128}
+            autoComplete={isLogin ? "current-password" : "new-password"}
+            className="rounded-lg border border-gray-300 px-3 py-2"
+          />
+        </label>
+
+        {submit.isError && (
+          <p className="text-sm text-red-600">{submit.error.message}</p>
+        )}
+
+        <button
+          type="submit"
+          disabled={submit.isPending}
+          className="rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white hover:bg-blue-700 disabled:bg-gray-400"
+        >
+          {submit.isPending ? "處理中…" : isLogin ? "登入" : "註冊"}
+        </button>
+      </form>
+
+      <p className="mt-4 text-center text-sm text-gray-500">
+        {isLogin ? "還沒有帳號？" : "已經有帳號了？"}
+        <button
+          type="button"
+          onClick={switchMode}
+          className="text-blue-600 hover:underline"
+        >
+          {isLogin ? "註冊" : "登入"}
+        </button>
+      </p>
+    </main>
+  );
+}
+```
+
+- 登入、註冊是**同一頁**，用 `mode` 切換。註冊模式多一個「名字」輸入框（`{!isLogin && ...}`）。
+- `mutationFn` 裡看 `isLogin`，決定打 `login` 還是 `signup`。
+- `autoComplete`：告訴瀏覽器這是 Email、目前的密碼、新密碼，瀏覽器的密碼管理才會正確提示要不要儲存。
+
+#### 步驟 16：測試
+
+打開 http://localhost:3000 。
+
+**① 已經登入了？**
+
+右上角**已經**是「哈囉，小明」，因為你第 1 段最後在 `/docs`（8000）登入了。第 1 段說過：cookie **不分連接埠**，8000 拿到的手環，3000 也帶得到。
+
+如果右上角是「登入／註冊」，代表瀏覽器裡沒有手環（例如第 1 段最後是用 `curl` 登入的），直接跳到 ③。
+
+**② 登出**
+
+按「登出」→ 回到首頁，右上角變成「登入／註冊」。`Cmd + Option + I` → Application → Cookies → `http://localhost:3000`，`sid` 不見了。
+
+**③ 登入**
+
+1. 點「登入／註冊」→ 網址變成 `/login`。
+2. 密碼故意打錯 → 紅字「Email 或密碼錯誤」。Console 分頁會多一行紅字 `401 (Unauthorized)`，那是瀏覽器自己印的，正常。
+3. 打開 **Network** 分頁，填正確的密碼 → 跳到「我的行程」，右上角「哈囉，小明」。
+   - Network 有一行 `login`，點它 → **Response Headers** 裡有 `set-cookie: sid=...`（Next.js 從後端轉過來的）。
+   - **沒有**新的 `me`：登入回來的資料直接放上小白板了。
+4. 按 `F5` → 還是「哈囉，小明」。
+
+**④ 註冊第二個帳號**
+
+第 3 段要用它測「不能動別人的行程」。
+
+1. 登出 → 點「登入／註冊」→ 下面的「**註冊**」。
+2. 名字「測試二號」、Email `test2@example.com`、密碼 `password123` → 跳到「我的行程」，右上角「哈囉，測試二號」。
+
+**⑤ 擋重複、擋格式**
+
+1. 登出 → 註冊模式，Email 填 `TEST2@example.com`（大寫），名字、密碼隨便 → 紅字「這個 Email 已經註冊過了」。
+2. 按下面的「登入」切換模式 → 紅字消失。
+3. 再切回註冊，密碼只打 7 個字 → 瀏覽器跳出「請將這段文字加長到 8 個字元以上」。Network **沒有**新的 `signup`：根本沒送出去。
+
+**⑥ 兩個分頁**
+
+1. 用小明登入。
+2. 再開一個分頁，打開 http://localhost:3000 → 右上角也是「哈囉，小明」。
+3. 在**第二個**分頁按「登出」。
+4. 切回**第一個**分頁 → 右上角自己變成「登入／註冊」：切回分頁時，`useMe()` 又問了一次後端。
+
+**⑦ 看資料庫**
+
+```
+cd ~/Desktop/travel-scheduler
+docker compose exec db psql -U travel -d travel_scheduler -c "SELECT id, email, name FROM users"
+```
+
+有 2 筆：小明、測試二號。
+
+最後用**小明**登入回來。
+
+### 3. 這一段結束後的資料夾
+
+```
+frontend/app/
+├── components/
+│   └── AuthCorner.tsx     ← 新增：導覽列右邊（登入／註冊、名字、登出）
+├── layout.tsx             ← 改：導覽列放上 AuthCorner
+├── lib/
+│   ├── api.ts             ← 改：getMe、signup、login、logout
+│   ├── types.ts           ← 改：User、SignupInput、LoginInput
+│   └── useMe.ts           ← 新增：我是誰（共用小白板上的 ["me"]）
+└── login/
+    └── page.tsx           ← 新增：/login，登入和註冊同一頁
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 「我是誰」記在哪 | `AuthContext`（`useState` ＋ `useEffect` ＋ Context） | TanStack Query 的 `["me"]`，用 `useMe()` 拿 |
+| 登入畫面 | 導覽列打開的彈出視窗 | 獨立的 `/login` 頁 |
+| 登入成功後 | 再打一次 `/api/me` | 把登入回來的會員資料直接放上小白板（`setQueryData`） |
+| 登出後 | `window.location.href = "/"`，整個網站重新載入 | `resetQueries()` 擦掉小白板 ＋ `router.push("/")` |
+| cookie 怎麼帶 | 也是經過 Next.js 轉送，另外寫了 `credentials: "include"` | 只靠轉送。同一個網站，瀏覽器本來就會帶 |
+| 測試帳號一鍵登入 | 有 | 沒有 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| 一打開網站就已經登入了 | 在 `/docs`（8000）登入過；cookie 不分連接埠 | 正常 |
+| 右上角好幾秒都是空的 | 後端沒開：`/api/me` 失敗，TanStack Query 會先自動重試 3 次，這段時間 `isPending` 一直是 `true` | 開 uvicorn |
+| 登入成功、跳頁了，右上角還是「登入／註冊」 | 登入頁少了 `setQueryData(["me"], user)` | 對照步驟 15 |
+| 按了登出、回到首頁，右上角還是名字 | `AuthCorner` 少了 `resetQueries()` | 對照步驟 13 |
+| Console 有紅字 `401`、`409` | 密碼錯、重複註冊時，瀏覽器自己印的 | 正常，畫面上的紅字訊息才是給使用者看的 |
+| 打開 `/login` 是 404 | 資料夾名稱打錯，或 `page.tsx` 放錯地方 | 要是 `app/login/page.tsx` |
+| 註冊時名字只打空白，出現「後端回應 422」 | 前端 `trim()` 之後變空字串，被後端的 `min_length=1` 擋下來 | 正常，後端是真的關卡 |
+
+### 📌 這一段的 3 個重點
+
+1. **前端讀不到手環，只能問後端「我是誰」**：`useMe()` 讓整個網站共用小白板上同一份 `["me"]`。
+2. **cookie 不用自己帶**：經過 Next.js 轉送，瀏覽器以為一直在跟同一個網站講話，`set-cookie` 會存、之後每次都會自動帶上。
+3. **登入寫上小白板，登出全部擦掉**：登入用 `setQueryData` 直接放上去；登出用 `resetQueries()`，不留上一個人的資料。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 前端為什麼不能自己讀 cookie 看「我是誰」，一定要打 `/api/me`？
+2. 登出時如果**沒有** `resetQueries()`，只有 `router.push("/")`，會發生什麼事？
+3. 註冊表單已經用 `minLength={8}` 擋住短密碼了，後端的 `Field(min_length=8)` 可以拿掉嗎？
+4. 為什麼 `api.ts` 不用寫任何跟 cookie 有關的程式，瀏覽器就會帶上手環？
+
+<details>
+<summary>點開看解答</summary>
+
+1. 手環是 `HttpOnly`，JavaScript 讀不到（這是故意的，第 1 段第 3 題：讀得到就偷得走）。而且手環上只有一串亂碼，就算讀得到，也看不出是誰，要查 Redis 才知道。所以只能問後端。
+2. 右上角還是「哈囉，小明」，因為小白板上的 `["me"]` 還留著舊答案，後端其實已經登出了。第 3 段開始更嚴重：下一個人在同一台電腦打開「我的行程」，會先看到小白板上**上一個人的行程**。
+3. 不行。前端的檢查只是讓使用者馬上知道哪裡錯，不用等後端。有人可以不透過網頁，直接用 `/docs`、`curl` 打 `/api/signup`，前端的檢查完全管不到。後端才是真的關卡。
+4. 因為瀏覽器只跟 `localhost:3000` 講話（`/api/...` 是由 Next.js 轉給 8000 的）。後端的 `set-cookie` 經過轉送回到瀏覽器，瀏覽器把它記在 `localhost` 底下；之後再打同一個網站的 `/api/...`，瀏覽器就自動帶上。
+
+</details>
+
+#### 你的實作紀錄（2026-11-16）
+
+- 前端 6 個檔案都正確。差別只有：`useMe.ts` 寫成 `import { getMe } from "./api"`（教材是 `"@/app/lib/api"`，兩個指向同一個檔案，應該是 VS Code 自動補的）；`layout.tsx` 的 import 之間少了一行空白。型別檢查、lint 都通過。
+- 你的資料庫（只讀）：`users` 有小明（id 1）、測試二號（id **3**）。**沒有 id 2**，跟第 2 課一樣：第 1 段 ⑥ 用大寫 Email 重複註冊時，資料庫先拿了號碼 2 才發現重複，那個號碼就跳過不用了。⑤ 再重複註冊一次，號碼 4 也被用掉了，下一個新帳號會是 5。
+- 你的 Redis（只讀）：1 個 session，是小明的，剛發的（剩 14 天）。代表最後有用小明登入回來。
+- 用 Chrome 開一個全新的視窗（沒有 cookie）看你的 3000，只看不改：導覽列是「搜尋景點 我的行程 登入／註冊」；點進去是 `/login`，有 Email、密碼；切到註冊多了「名字」、「密碼（至少 8 個字）」。主控台沒有錯誤，也沒有送出任何 POST。
