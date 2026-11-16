@@ -97,3 +97,16 @@ class ItineraryItem(Base):
 
     # 讀這一站時，順便用 JOIN 把景點的完整資料一起拿回來
     destination: Mapped[Destination] = relationship(lazy="joined")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(
+        String(255), unique=True)  # 一個 Email 只能註冊一次
+    name: Mapped[str] = mapped_column(String(100))
+    password_hash: Mapped[str] = mapped_column(String(255))  # 打成泥的密碼，不存密碼本身
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

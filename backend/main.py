@@ -1,8 +1,9 @@
 from fastapi import FastAPI
-from router import destinations, itinerary, legs, search, trips, places
+from router import auth, destinations, itinerary, legs, search, trips, places
 
 app = FastAPI()
 
+app.include_router(auth.router)
 app.include_router(destinations.router)
 app.include_router(search.router)
 app.include_router(trips.router)
