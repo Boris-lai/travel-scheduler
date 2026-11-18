@@ -1,6 +1,6 @@
 # 第 8 課：登入、權限、分享
 
-> **狀態**：第 1 段（後端：註冊、登入、登出）✅ ／ 第 2 段（前端：登入／註冊畫面）✅
+> **狀態**：第 1 段（後端：註冊、登入、登出）✅ ／ 第 2 段（前端：登入／註冊畫面）✅ ／ 第 3 段（權限：行程有主人）✅
 > **日期**：2026-11-14 ～
 > **對照原專案**：`backend/core/security.py`、`backend/core/dependencies.py`、`backend/router/auth.py`、`backend/schemas/auth.py`、`backend/router/share.py`、`frontend/app/context/AuthContext.tsx`、`frontend/app/components/layout/AuthCorner.tsx`、`frontend/app/lib/tripIndex.ts`
 
@@ -1117,3 +1117,774 @@ frontend/app/
 - 你的資料庫（只讀）：`users` 有小明（id 1）、測試二號（id **3**）。**沒有 id 2**，跟第 2 課一樣：第 1 段 ⑥ 用大寫 Email 重複註冊時，資料庫先拿了號碼 2 才發現重複，那個號碼就跳過不用了。⑤ 再重複註冊一次，號碼 4 也被用掉了，下一個新帳號會是 5。
 - 你的 Redis（只讀）：1 個 session，是小明的，剛發的（剩 14 天）。代表最後有用小明登入回來。
 - 用 Chrome 開一個全新的視窗（沒有 cookie）看你的 3000，只看不改：導覽列是「搜尋景點 我的行程 登入／註冊」；點進去是 `/login`，有 Email、密碼；切到註冊多了「名字」、「密碼（至少 8 個字）」。主控台沒有錯誤，也沒有送出任何 POST。
+
+---
+
+## 第 3 段：權限：行程有主人
+
+### 開始前的測試結果（2026-11-16）
+
+我先在另一份複製的前後端和資料庫測過：先用 curl 打 API，再用 Chrome 自動操作畫面。小明是 id 1，測試二號是 id 3，跟你的資料庫一樣。
+
+**API（curl）**
+
+| 誰 | 做什麼 | 結果 |
+|---|---|---|
+| 小明 | 剛加完欄位，還沒認領舊行程：`GET /api/trips` | `[]`：兩個行程都還沒有主人 |
+| 小明 | 同上，`GET /api/trips/1` | `403`「這不是你的行程」：**自己的行程也打不開** |
+| — | 認領：`UPDATE trips SET user_id = 1 WHERE user_id IS NULL` | `UPDATE 2` |
+| 小明 | `GET /api/trips`、`/api/trips/1`、每日行程 | 都回來了 |
+| 小明 | `GET /api/trips/999` | `404`「找不到這個行程」 |
+| 測試二號 | `GET /api/trips` | `[]`：只列自己的 |
+| 測試二號 | 小明的行程：讀、刪、加景點、存每日行程、刪一站（7 支） | 全部 `403`「這不是你的行程」 |
+| 沒登入 | `GET /api/trips`、建立行程、讀行程、刪行程 | 全部 `401`「請先登入」 |
+| 測試二號 | 建立「測試二號的行程」 | `201`，資料庫裡 `user_id` 是 `3` |
+| 小明 | 打開測試二號的行程 | `403` |
+| 測試二號 | 刪掉自己的行程 | `204` |
+| 沒登入 | `/api/me`、交通時間 | 照樣能用：不屬於某個行程的 API 不檢查 |
+
+**遷移檔**：`downgrade` 退回、再 `upgrade`，都成功（外鍵有取名字的關係，觀念裡會說明）。
+
+**畫面（Chrome）**
+
+| 測試 | 結果 |
+|---|---|
+| 沒登入打開「我的行程」 | 「請先登入，才能建立和查看你的行程。」而且**沒有**打 `/api/trips` |
+| 沒登入打開首頁 | 「登入之後，可以把景點加進你的行程」，沒有選單 |
+| 沒登入打開 `/trips/1` | 「請先登入」 |
+| 小明 | 我的行程有京都三日遊、大阪兩日遊；編輯頁正常；首頁選單有兩個行程，搜京都有「加入＋」 |
+| 在首頁登出 | 選單、「加入＋」都不見了 |
+| 測試二號 | 我的行程「還沒有行程」；打開 `/trips/1` 是「這不是你的行程」 |
+| 測試二號建立、刪除自己的行程 | 都正常 |
+
+### 1. 學到的觀念
+
+#### 401 和 403
+
+延續會員手環的比喻，店裡多了**包廂**（行程），每個包廂都有訂位的人（主人）：
+
+| | 意思 | 包廂門口 | 什麼時候 |
+|---|---|---|---|
+| **401** | 我不知道你是誰 | 「請先出示手環」 | 沒登入、手環過期 |
+| **403** | 我知道你是誰，但你不能進 | 「認得你，但這間不是你訂的」 | 登入了，但不是主人 |
+| **404** | 沒有這間 | 「我們沒有這個包廂」 | 行程不存在 |
+
+測試二號打開小明的行程，是 **403** 不是 401：他有戴手環，店員知道他是誰，只是包廂不是他的。
+
+#### 一個門口，守住所有 API
+
+```python
+def get_editable_trip(trip_id, user = Depends(get_current_user), db = ...) -> Trip:
+    trip = db.get(Trip, trip_id)
+    if trip is None:
+        raise HTTPException(404, "找不到這個行程")
+    if trip.user_id != user.id:
+        raise HTTPException(403, "這不是你的行程")
+    return trip
+```
+
+所有 `/api/trips/{trip_id}/...`，都把原本的 `trip_id: int` 換成：
+
+```python
+trip: Trip = Depends(get_editable_trip)
+```
+
+**能進到函式裡面，就代表「行程存在，而且你是主人」**。函式裡不用再寫任何檢查，直接用 `trip` 就好（原本的 `get_trip_or_404` 也用不到了）。
+
+為什麼不在每支 API 裡面自己檢查？因為 `/api/trips/{trip_id}/...` 的 API 有 11 支，**忘了一支就是漏洞**。寫成一個 dependency，每支都長得一樣，少了一眼就看得出來。
+
+幾個細節：
+
+- `get_editable_trip` 的參數有 `trip_id`，FastAPI 會自己從網址的 `{trip_id}` 拿。所以 API 函式**不用**再寫 `trip_id`。
+- 它裡面又用了 `Depends(get_current_user)`：沒登入的話，在這一步就回 401 了，不會走到 403。
+- `get_editable_trip` 和 API 函式都用 `Depends(get_db)`，FastAPI 在同一個請求裡只會借**一次**資料庫連線，兩邊拿到的是同一個。所以 `delete_trip` 可以直接 `db.delete(trip)`。
+
+不屬於某個行程的 API（搜尋、Google 建議、交通時間、`/api/me`）不用檢查，沒登入也能用。
+
+#### 舊資料要「認領」
+
+`trips` 加了 `user_id` 欄位，**舊的兩個行程這一格是空的**（`NULL`）。這時候：
+
+- `list_trips` 只列 `user_id == 小明`，所以小明的列表是空的。
+- `get_editable_trip` 比較 `None != 1`，所以小明打開京都三日遊是 403。
+
+**自己的行程，自己也打不開了**。所以要下一行 SQL，把沒有主人的行程都歸給小明（id 1）：
+
+```sql
+UPDATE trips SET user_id = 1 WHERE user_id IS NULL
+```
+
+為什麼不寫在遷移檔裡？遷移檔是**每個環境都會跑**的：第 10 課上線時，正式機的資料庫也會跑同一個檔案。那裡的 id 1 不一定是你，甚至可能還沒有任何會員。「舊資料歸給誰」只跟你這台電腦有關，所以自己下 SQL。
+
+#### 外鍵要取名字
+
+```python
+ForeignKey("users.id", ondelete="CASCADE", name="fk_trips_user_id")
+```
+
+- `ondelete="CASCADE"`：會員被刪掉，他的行程也一起刪掉（第 6 課景點池也是這樣）。
+- `name=`：第 6 課的外鍵都是**建表時一起建的**，退回上一版時整張表刪掉，外鍵就跟著不見了。這次是在**已經有的表**上加外鍵，退回上一版時要單獨刪掉它，就要知道它叫什麼名字。沒取名字的話，Alembic 產生的 `downgrade()` 會出現 `WARNING: constraint name is None`，到時候退回就會失敗。
+
+#### 前端：知道會 401 的，就不要打
+
+```ts
+const { data: me } = useMe();
+useQuery({ queryKey: ["trips"], queryFn: listTrips, enabled: !!me });
+```
+
+沒登入時，`/api/trips` 一定是 401，打了也是白打，所以 `enabled: !!me`，登入了才去拿。`!!me` 是把 `me` 變成 `true`／`false`：有會員資料是 `true`，`null`、`undefined` 是 `false`。
+
+「我的行程」頁沒登入時，直接顯示「請先登入」。注意 `return` 要寫在**所有 hook 的下面**：React 規定 hook 每次都要照同樣的順序、同樣的數量執行，如果在 `useMutation` 之前就 `return`，有時候執行到、有時候沒有，React 就會報錯。
+
+### 2. 實作步驟
+
+這一段前後端都要改，還要用 Alembic 加一個欄位。
+
+#### 步驟 17：`models.py` 的 `Trip` 加 `user_id`
+
+`start_date` 那行的**下面**加上：
+
+```python
+    # 行程的主人（指向 users 表）。會員被刪掉，他的行程也一起刪掉。
+    # 可以是 None：舊的行程還沒有主人；第 4 段沒登入建立的行程也沒有
+    user_id: Mapped[int | None] = mapped_column(
+        # 外鍵要取名字，Alembic 退回上一版（downgrade）時才知道要刪哪一個
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_trips_user_id"),
+        index=True,
+    )
+```
+
+`User` 寫在檔案最後面也沒關係：`"users.id"` 是字串，Python 不用先認得 `User`。
+
+#### 步驟 18：用 Alembic 加欄位
+
+```
+cd ~/Desktop/travel-scheduler/backend
+uv run alembic revision --autogenerate -m "add user_id to trips"
+```
+
+打開最新的遷移檔（後面是 `add_user_id_to_trips`），確認 `upgrade()` 裡是這三行：
+
+```python
+    op.add_column('trips', sa.Column('user_id', sa.Integer(), nullable=True))
+    op.create_index(op.f('ix_trips_user_id'), 'trips', ['user_id'], unique=False)
+    op.create_foreign_key('fk_trips_user_id', 'trips', 'users', ['user_id'], ['id'], ondelete='CASCADE')
+```
+
+1. 加欄位 2. 加索引（`index=True`：「列出小明的行程」會比較快）3. 加外鍵。第 3 行的第一個參數是 `'fk_trips_user_id'`，**不是 `None`**；`downgrade()` 裡也**沒有** `WARNING`。確認沒問題就套用：
+
+```
+uv run alembic upgrade head
+```
+
+最後一行應該是 `Running upgrade 5505095168bb -> ……, add user_id to trips`。
+
+#### 步驟 19：`core/dependencies.py`
+
+**① import** 改成：
+
+```python
+from models import Trip, User
+```
+
+**② 最下面**加上：
+
+```python
+def get_editable_trip(
+    trip_id: int,  # 從網址的 /api/trips/{trip_id}/... 拿
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Trip:
+    """行程存在，而且你是主人，才放行。所有 /api/trips/{trip_id}/... 都先過這一關"""
+    trip = db.get(Trip, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="找不到這個行程")
+    if trip.user_id != user.id:
+        raise HTTPException(status_code=403, detail="這不是你的行程")
+    return trip
+```
+
+#### 步驟 20：`router/trips.py` 整個換掉
+
+```python
+import requests
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from core.dependencies import get_current_user, get_editable_trip
+from models import Destination, Trip, TripPlace, User
+from schemas.destination import DestinationOut
+from schemas.trip import TripCreate, TripOut, TripPlaceCreate, TripPlaceGoogleCreate
+from services.places import place_details
+
+
+router = APIRouter()
+
+
+@router.post("/api/trips", response_model=TripOut, status_code=201)
+def create_trip(
+    payload: TripCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    trip = Trip(**payload.model_dump(), user_id=user.id)  # 誰建立的，誰就是主人
+    db.add(trip)
+    db.commit()
+    db.refresh(trip)
+    return trip
+
+
+@router.get("/api/trips", response_model=list[TripOut])
+def list_trips(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # 只列出自己的行程
+    stmt = select(Trip).where(Trip.user_id == user.id).order_by(Trip.id.desc())
+    return db.scalars(stmt).all()
+
+
+# 下面每一支都有 trip: Trip = Depends(get_editable_trip)：
+# 能進到函式裡面，就代表「行程存在，而且你是主人」
+
+
+@router.get("/api/trips/{trip_id}", response_model=TripOut)
+def get_trip(trip: Trip = Depends(get_editable_trip)):
+    return trip
+
+
+@router.delete("/api/trips/{trip_id}", status_code=204)
+def delete_trip(trip: Trip = Depends(get_editable_trip), db: Session = Depends(get_db)):
+    db.delete(trip)
+    db.commit()
+
+
+# ---------- 景點池 ----------
+
+
+@router.get("/api/trips/{trip_id}/places", response_model=list[DestinationOut])
+def list_trip_places(
+    trip: Trip = Depends(get_editable_trip), db: Session = Depends(get_db)
+):
+    # JOIN：景點池裡只有景點的 id，接到 destinations 表，才拿得到名稱、介紹這些資料
+    stmt = (
+        select(Destination)
+        .join(TripPlace, TripPlace.destination_id == Destination.id)
+        .where(TripPlace.trip_id == trip.id)
+        .order_by(TripPlace.created_at)
+    )
+    return db.scalars(stmt).all()
+
+
+@router.post(
+    "/api/trips/{trip_id}/places", response_model=DestinationOut, status_code=201
+)
+def add_trip_place(
+    payload: TripPlaceCreate,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    destination = db.get(Destination, payload.destination_id)
+    if destination is None:
+        raise HTTPException(status_code=404, detail="找不到這個景點")
+
+    db.add(TripPlace(trip_id=trip.id, destination_id=destination.id))
+    try:
+        db.commit()
+    except IntegrityError:
+        # 主鍵（trip_id, destination_id）重複：這個景點已經在景點池裡了
+        db.rollback()
+        raise HTTPException(status_code=409, detail="這個景點已經在景點池裡了")
+    return destination
+
+
+@router.post(
+    "/api/trips/{trip_id}/places/google",
+    response_model=DestinationOut,
+    status_code=201,
+)
+def add_trip_place_from_google(
+    payload: TripPlaceGoogleCreate,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    # 資料庫已經有這個地點（例如 AI 找過）就直接用，不用再問 Google
+    destination = db.scalar(
+        select(Destination).where(
+            Destination.google_place_id == payload.google_place_id)
+    )
+    if destination is None:
+        try:
+            details = place_details(payload.google_place_id)
+        except requests.RequestException:
+            raise HTTPException(status_code=502, detail="Google 查詢失敗，請稍後再試")
+        destination = Destination(
+            **details, google_place_id=payload.google_place_id, source="google"
+        )
+        db.add(destination)
+        db.flush()  # 先送到資料庫拿到 id（還沒存檔），下一行才用得到 destination.id
+
+    db.add(TripPlace(trip_id=trip.id, destination_id=destination.id))
+    try:
+        db.commit()  # 新景點和景點池那一筆，一起存檔
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="這個景點已經在景點池裡了")
+    return destination
+
+
+@router.delete("/api/trips/{trip_id}/places/{destination_id}", status_code=204)
+def remove_trip_place(
+    destination_id: int,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    # 主鍵有兩個欄位，所以要用兩個值去找
+    trip_place = db.get(TripPlace, (trip.id, destination_id))
+    if trip_place is None:
+        raise HTTPException(status_code=404, detail="這個景點不在景點池裡")
+    db.delete(trip_place)
+    db.commit()
+```
+
+跟原本比：
+
+- `create_trip`：多了 `user = Depends(get_current_user)`，建立時 `user_id=user.id`。
+- `list_trips`：多了 `.where(Trip.user_id == user.id)`。
+- 其他每一支：`trip_id: int` 換成 `trip: Trip = Depends(get_editable_trip)`，`get_trip_or_404(...)` 那行刪掉，用到 `trip_id` 的地方改成 `trip.id`。
+- `get_trip_or_404` 整個刪掉了（`router/itinerary.py` 原本也用它，下一步一起改）。
+
+#### 步驟 21：`router/itinerary.py` 整個換掉
+
+```python
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from core.dependencies import get_editable_trip
+from models import ItineraryItem, Trip, TripPlace
+from schemas.itinerary import (
+    ItineraryDaySave,
+    ItineraryItemCreate,
+    ItineraryItemOut,
+)
+
+
+router = APIRouter()
+
+
+def check_day(trip: Trip, day_index: int) -> None:
+    """這個行程要有這一天（第 1 天到最後一天）"""
+    if not 1 <= day_index <= trip.days:
+        raise HTTPException(status_code=404, detail=f"這個行程只有 {trip.days} 天")
+
+
+def day_items(db: Session, trip_id: int, day_index: int) -> list[ItineraryItem]:
+    """某一天的每一站，照順序排好"""
+    stmt = (
+        select(ItineraryItem)
+        .where(ItineraryItem.trip_id == trip_id, ItineraryItem.day_index == day_index)
+        .order_by(ItineraryItem.position)
+    )
+    return list(db.scalars(stmt).all())
+
+
+@router.get(
+    "/api/trips/{trip_id}/days/{day_index}/itinerary",
+    response_model=list[ItineraryItemOut],
+)
+def list_day_itinerary(
+    day_index: int,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    check_day(trip, day_index)
+    return day_items(db, trip.id, day_index)
+
+
+@router.get("/api/trips/{trip_id}/itinerary", response_model=list[ItineraryItemOut])
+def list_trip_itinerary(
+    trip: Trip = Depends(get_editable_trip), db: Session = Depends(get_db)
+):
+    """整個行程每一天的每一站，照第幾天、第幾站排好"""
+    stmt = (
+        select(ItineraryItem)
+        .where(ItineraryItem.trip_id == trip.id)
+        .order_by(ItineraryItem.day_index, ItineraryItem.position)
+    )
+    return db.scalars(stmt).all()
+
+
+@router.post(
+    "/api/trips/{trip_id}/days/{day_index}/itinerary",
+    response_model=ItineraryItemOut,
+    status_code=201,
+)
+def add_to_day(
+    day_index: int,
+    payload: ItineraryItemCreate,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    check_day(trip, day_index)
+
+    # 資料庫也會擋這兩種情況，先自己檢查，是為了回比較清楚的訊息
+    if db.get(TripPlace, (trip.id, payload.destination_id)) is None:
+        raise HTTPException(status_code=400, detail="請先把這個景點加進景點池")
+    scheduled = db.scalar(
+        select(ItineraryItem).where(
+            ItineraryItem.trip_id == trip.id,
+            ItineraryItem.destination_id == payload.destination_id,
+        )
+    )
+    if scheduled is not None:
+        raise HTTPException(
+            status_code=409, detail=f"這個景點已經排在第 {scheduled.day_index} 天了"
+        )
+
+    # 排在這一天的最後面：目前最大的 position ＋ 1；這一天還是空的，就是 0
+    last = db.scalar(
+        select(func.max(ItineraryItem.position)).where(
+            ItineraryItem.trip_id == trip.id, ItineraryItem.day_index == day_index
+        )
+    )
+    item = ItineraryItem(
+        trip_id=trip.id,
+        destination_id=payload.destination_id,
+        day_index=day_index,
+        position=0 if last is None else last + 1,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete("/api/trips/{trip_id}/itinerary/{item_id}", status_code=204)
+def remove_from_day(
+    item_id: int,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    item = db.get(ItineraryItem, item_id)
+    if item is None or item.trip_id != trip.id:
+        raise HTTPException(status_code=404, detail="這個行程裡沒有這一站")
+
+    day_index = item.day_index
+    db.delete(item)
+    db.flush()  # 先把「刪除」送到資料庫（還沒存檔），下面重新編號時才不會算到它
+
+    # 補位：剩下的重新編成 0、1、2……，中間不留空號
+    for new_position, rest in enumerate(day_items(db, trip.id, day_index)):
+        rest.position = new_position
+    db.commit()
+
+
+@router.put(
+    "/api/trips/{trip_id}/days/{day_index}/itinerary",
+    response_model=list[ItineraryItemOut],
+)
+def save_day(
+    day_index: int,
+    payload: ItineraryDaySave,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    check_day(trip, day_index)
+    items = {item.id: item for item in day_items(db, trip.id, day_index)}
+
+    # 要送這一天的每一站：不能多、不能少、不能重複
+    sent_ids = [row.id for row in payload.items]
+    if len(sent_ids) != len(set(sent_ids)) or set(sent_ids) != set(items):
+        raise HTTPException(
+            status_code=400, detail="要送這一天的每一站，不能多、不能少、不能重複"
+        )
+
+    for new_position, row in enumerate(payload.items):
+        if (
+            row.arrival_time is not None
+            and row.departure_time is not None
+            and row.departure_time < row.arrival_time
+        ):
+            # 在這裡出錯的話，前面幾站改到一半的資料都不會存進去（還沒 commit）
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {new_position + 1} 站的離開時間比抵達時間早",
+            )
+        item = items[row.id]
+        item.position = new_position
+        item.arrival_time = row.arrival_time
+        item.departure_time = row.departure_time
+        item.travel_mode = row.travel_mode
+
+    db.commit()  # 全部都改好了，才一次存檔
+    return day_items(db, trip.id, day_index)
+```
+
+- `check_day` 改成直接收 `trip`：行程已經在門口檢查過、拿到了，只要再看「有沒有這一天」。
+- 每一支都跟 `trips.py` 一樣換成 `trip: Trip = Depends(get_editable_trip)`，`trip_id` 改成 `trip.id`。`day_items()` 不是 API，參數還是叫 `trip_id`，不用改。
+
+存檔之後，uvicorn 會自己重開。
+
+#### 步驟 22：先看看「自己的行程打不開」，再認領
+
+1. 確認右上角是「哈囉，小明」，打開「我的行程」→「還沒有行程，先建立一個吧！」：兩個行程都還沒有主人。
+2. 網址列直接打 http://localhost:3000/trips/1 →「這不是你的行程」。
+3. 看一下資料庫：
+
+   ```
+   cd ~/Desktop/travel-scheduler
+   docker compose exec db psql -U travel -d travel_scheduler -c "SELECT id, title, user_id FROM trips"
+   ```
+
+   `user_id` 那一欄是空的。
+4. 認領，全部歸給小明（id 1）：
+
+   ```
+   docker compose exec db psql -U travel -d travel_scheduler -c "UPDATE trips SET user_id = 1 WHERE user_id IS NULL"
+   ```
+
+   → `UPDATE 2`。再跑一次第 3 點的 `SELECT`，`user_id` 都是 `1` 了。
+5. 回「我的行程」按 `F5` → 京都三日遊、大阪兩日遊都回來了。
+
+#### 步驟 23：前端 `app/trips/page.tsx` 改三個地方
+
+**① import** 多一行（`api` 那行的下面）：
+
+```tsx
+import { createTrip, deleteTrip, listTrips } from "@/app/lib/api";
+import { useMe } from "@/app/lib/useMe";
+```
+
+**② `useQuery` 那一段**換成這樣（上面多一行 `useMe()`，裡面多一行 `enabled`）：
+
+```tsx
+  const { data: me, isPending: mePending } = useMe();
+
+  const {
+    data: trips,
+    isPending,
+    isError,
+  } = useQuery({
+    queryKey: ["trips"],
+    queryFn: listTrips,
+    enabled: !!me, // 登入了才去拿（沒登入，後端只會回 401）
+  });
+```
+
+**③ `handleDelete` 函式的下面、`return (` 的上面**，加上：
+
+```tsx
+  // 上面的 hook 都要先寫完，才能 return（React 規定 hook 每次都要照同樣的順序執行）
+  if (mePending) {
+    return <main className="mx-auto max-w-5xl p-6 text-gray-500">載入中…</main>;
+  }
+  if (!me) {
+    return (
+      <main className="mx-auto max-w-5xl p-6">
+        <h1 className="mb-6 text-3xl font-bold">我的行程</h1>
+        <p className="text-gray-500">
+          請先
+          <Link href="/login" className="text-blue-600 hover:underline">
+            登入
+          </Link>
+          ，才能建立和查看你的行程。
+        </p>
+      </main>
+    );
+  }
+```
+
+#### 步驟 24：前端 `app/page.tsx`（首頁）改五個地方
+
+**① import** 多一行（`api` 那段的下面）：
+
+```tsx
+import { useMe } from "@/app/lib/useMe";
+```
+
+**② 「加入到哪個行程」的 `tripsQuery`** 換成：
+
+```tsx
+  // 「加入到哪個行程」的選單要用的行程清單：登入了才去拿
+  const { data: me } = useMe();
+  const tripsQuery = useQuery({
+    queryKey: ["trips"],
+    queryFn: listTrips,
+    enabled: !!me,
+  });
+```
+
+**③ `poolQuery` 裡的 `enabled`** 換成：
+
+```tsx
+    enabled: tripId !== null && !!me, // 還沒選行程、或沒登入，就不用拿
+```
+
+**④ `addButton` 函式的第一行**換成：
+
+```tsx
+    if (tripId === null || !me) return null; // 還沒選行程、或沒登入，就不顯示
+```
+
+在首頁登出時，頁面不會重新載入，選過的行程還記著。沒有這一行，景點卡片上還是會有「加入＋」，按下去就是 401。
+
+**⑤ `<div className="mb-6 flex items-center gap-2 text-sm">` 那一整段**（「加入到：」的選單，到 `addPlace.isError` 下面的 `</div>` 為止）換成：
+
+```tsx
+      {/* 登入了才顯示「加入到」選單；沒登入的話，提示先登入 */}
+      {me ? (
+        <div className="mb-6 flex items-center gap-2 text-sm">
+          <span className="text-gray-600">加入到：</span>
+          <select
+            value={tripId ?? ""}
+            onChange={(e) =>
+              setTripId(e.target.value ? Number(e.target.value) : null)
+            }
+            className="rounded-lg border border-gray-300 bg-white px-3 py-1"
+          >
+            <option value="">選一個行程</option>
+            {tripsQuery.data?.map((trip) => (
+              <option key={trip.id} value={trip.id}>
+                {trip.title}
+              </option>
+            ))}
+          </select>
+          {tripsQuery.data?.length === 0 && (
+            <Link href="/trips" className="text-blue-600 hover:underline">
+              先去建立一個行程
+            </Link>
+          )}
+          {addPlace.isError && (
+            <span className="text-red-600">{addPlace.error.message}</span>
+          )}
+        </div>
+      ) : (
+        <p className="mb-6 text-sm text-gray-500">
+          <Link href="/login" className="text-blue-600 hover:underline">
+            登入
+          </Link>
+          之後，可以把景點加進你的行程
+        </p>
+      )}
+```
+
+`{me ? (...) : (...)}`：登入了顯示選單，沒登入顯示「登入之後……」。
+
+#### 步驟 25：測試
+
+確認 uvicorn、`npm run dev` 都在跑，右上角是「哈囉，小明」。
+
+**① 小明：跟以前一樣**
+
+1. 我的行程：京都三日遊、大阪兩日遊。
+2. 點進京都三日遊 → 景點池、每日行程、地圖都在。拖拉一下、按「儲存」→ 正常。
+3. 首頁：「加入到」選單有兩個行程。
+
+**② 測試二號：看不到、改不了小明的行程**
+
+1. 登出 → 用測試二號登入（`test2@example.com`、`password123`）。
+2. 我的行程 →「還沒有行程」。
+3. 網址列打 http://localhost:3000/trips/1 →「這不是你的行程」。
+4. 打開 http://localhost:8000/docs →`DELETE /api/trips/{trip_id}`，`trip_id` 填 `1`，`sid` 留空 → `403`「這不是你的行程」。cookie 不分連接埠，`/docs` 裡也是測試二號的身分。
+5. 回 3000 建立一個「測試二號的行程」→ 自動進到它的編輯頁。看資料庫：
+
+   ```
+   docker compose exec db psql -U travel -d travel_scheduler -c "SELECT id, title, user_id FROM trips"
+   ```
+
+   新的那一筆 `user_id` 是 `3`。
+6. 回「我的行程」，把「測試二號的行程」刪掉。
+
+**③ 沒登入**
+
+1. 登出。
+2. 我的行程 →「請先登入，才能建立和查看你的行程。」
+3. 首頁 →「登入之後，可以把景點加進你的行程」，沒有選單。
+4. http://localhost:3000/trips/1 →「請先登入」。
+5. 終端機（沒有 cookie）：
+
+   ```
+   curl -s -X DELETE http://localhost:8000/api/trips/1
+   ```
+
+   → `{"detail":"請先登入"}`。
+
+最後用**小明**登入回來。
+
+### 3. 這一段結束後的資料夾
+
+```
+backend/
+├── alembic/versions/
+│   └── xxxx_add_user_id_to_trips.py ← 新增（Alembic 產生的）
+├── core/
+│   └── dependencies.py    ← 改：get_editable_trip
+├── models.py              ← 改：Trip 加 user_id
+└── router/
+    ├── itinerary.py       ← 改：每一支都用 get_editable_trip
+    └── trips.py           ← 改：建立時記主人、只列自己的、每一支都用 get_editable_trip
+
+frontend/app/
+├── page.tsx               ← 改：沒登入不顯示「加入到」
+└── trips/
+    └── page.tsx           ← 改：沒登入顯示「請先登入」
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 檢查寫在哪 | `assert_trip_owner`，掛在 `dependencies=[Depends(...)]`，只檢查、不回傳 | `get_editable_trip` 當成參數，檢查完把行程交給函式，不用再查一次 |
+| `trips.user_id` | 只有索引，沒有外鍵 | 外鍵指向 `users`，刪會員連行程一起刪 |
+| 建立行程 | 一律先建成沒有主人，登入的話前端再打 `/bind` 認領 | 登入了就直接是主人（第 4 段才有沒主人的） |
+| 沒登入打 API | 先查行程（不存在回 404）；有主人的行程，沒登入回 **403**「此為私人行程，請先登入」 | 先看有沒有登入，沒登入一律 **401**，再查行程 |
+| 我的行程 | `WHERE user_id = 自己` | 一樣 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| 遷移檔的 `downgrade()` 有 `WARNING: constraint name is None` | `ForeignKey` 少了 `name=` | 補上 `name="fk_trips_user_id"`，刪掉那個遷移檔，再產生一次 |
+| 小明打開自己的行程也是「這不是你的行程」 | 還沒認領，`user_id` 是空的 | 步驟 22 第 4 點 |
+| uvicorn 印 `ImportError: cannot import name 'get_trip_or_404'`，整個後端起不來 | `trips.py` 換好了，`itinerary.py` 還沒換，還在 import 已經刪掉的函式 | 步驟 21 |
+| 每支行程 API 都回 422，說少了一個 `query` 參數 | `get_editable_trip` 的 `trip_id` 打錯字：FastAPI 找不到同名的網址參數，就當成要從網址 `?` 後面拿 | 名字要跟網址的 `{trip_id}` 一模一樣，對照步驟 19 |
+| 「我的行程」一直是「載入中…」 | 沒登入時用了 `enabled: !!me`，卻沒有先 `return` 請先登入，下面就一直等一個不會開始的請求 | 對照步驟 23 ③ |
+| React 報錯 `Rendered fewer hooks than expected` | `return` 寫在某個 hook 的上面 | `return` 要放在所有 `useState`、`useQuery`、`useMutation` 的下面 |
+| 在首頁登出時，Console 有幾行 `401` | 登出那一刻，小白板重抓了「我的行程」和景點池，後端已經不認你了 | 正常，畫面沒有影響 |
+| 用測試二號在 `/docs` 測完，3000 也變成測試二號 | cookie 不分連接埠，兩邊是同一個手環 | 正常，最後記得用小明登入回來 |
+
+### 📌 這一段的 3 個重點
+
+1. **401 是「不知道你是誰」，403 是「知道你是誰，但不能進」**，404 是「沒有這個行程」。
+2. **一個 dependency 守住所有行程 API**：`trip: Trip = Depends(get_editable_trip)`，能進到函式裡，就代表行程存在、你是主人。忘了一支就是漏洞，所以每支都長一樣。
+3. **加了「主人」欄位，舊資料要認領**：舊的列 `user_id` 是空的，自己也打不開。只跟這台電腦有關的資料，自己下 SQL，不寫進遷移檔。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 為什麼檢查要寫成一個 `get_editable_trip`，不在每支 API 裡面自己寫 `if trip.user_id != user.id`？
+2. 測試二號打開小明的行程，為什麼是 403，不是 401？
+3. 如果 `list_trips` 忘了加 `.where(Trip.user_id == user.id)`，會發生什麼事？`get_editable_trip` 救得了嗎？
+4. 「把舊行程歸給小明」為什麼不寫在遷移檔裡？
+
+<details>
+<summary>點開看解答</summary>
+
+1. `/api/trips/{trip_id}/...` 的 API 有 11 支，每支都自己寫，**只要忘了一支，那一支就誰都能用**，而且很難發現（功能照樣正常，只是沒檢查）。寫成一個 dependency，每支 API 都是同一行 `trip: Trip = Depends(get_editable_trip)`，少了一眼就看得出來；要改規則（例如第 4 段加上匿名行程）也只改一個地方。
+2. 401 是「不知道你是誰」。測試二號有登入、有手環，後端知道他是會員 3 號，只是這個行程的主人是 1 號，所以是「知道你是誰，但不能進」的 403。
+3. 每個人的「我的行程」都會列出**所有人**的行程，看得到別人的行程名稱、天數、日期。`get_editable_trip` 救不了：它只守 `/api/trips/{trip_id}/...` 這些「某一個行程」的 API，「列出行程」的條件要自己寫對。點進去才會被 403 擋下來，但名稱已經洩漏了。
+4. 遷移檔是每個環境都會跑的（例如第 10 課的正式機）。那裡的 id 1 不一定是你，可能是別人，甚至還沒有任何會員（外鍵會讓 `UPDATE` 失敗）。「舊資料歸給誰」只跟你這台電腦的資料有關，所以自己下一次 SQL 就好。
+
+</details>
+
+#### 你的實作紀錄（2026-11-18）
+
+- 後端 4 個檔案、前端 2 個檔案都正確。`trips.py`、`itinerary.py` 跟教材一模一樣。其他只差排版：`models.py` 的 `index=True` 後面少了逗號；`dependencies.py` 寫成 `import User, Trip`（順序不同）；`trips/page.tsx` 多一行空白、`enabled` 那行少了註解；首頁的 `useMe` 寫成相對路徑 `./lib/useMe`。型別檢查、lint 都通過。
+- 遷移檔 `29da37c211c8`：外鍵是 `'fk_trips_user_id'`（不是 `None`），`downgrade()` 沒有 WARNING，資料庫在最新版。`\d trips` 看得到 `ix_trips_user_id` 索引和 `fk_trips_user_id` 外鍵（`ON DELETE CASCADE`）。
+- 你的資料庫（只讀）：京都三日遊、大阪兩日遊的 `user_id` 都是 `1`，步驟 22 的認領有做。行程的流水號到了 5，代表步驟 25 ② 建了「測試二號的行程」又刪掉了。
+- 打你開著的後端（沒有 cookie）：`/api/trips`、`/api/trips/1`、每日行程、`/api/trips/999`、`DELETE /api/trips/1` 全部 `401`「請先登入」。
+- 用 Chrome 開一個沒有 cookie 的視窗看你的 3000（只看不改）：「我的行程」顯示「請先登入，才能建立和查看你的行程。」，而且沒有打 `/api/trips`；首頁顯示「登入之後，可以把景點加進你的行程」，沒有選單；`/trips/1` 顯示「請先登入」。主控台只有 `/trips/1` 那一行 `401`，正常。
+- Redis：1 個 session，是小明的，代表最後有登入回來。

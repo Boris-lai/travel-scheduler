@@ -3,8 +3,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from models import ItineraryItem, TripPlace
-from router.trips import get_trip_or_404
+from core.dependencies import get_editable_trip
+from models import ItineraryItem, Trip, TripPlace
 from schemas.itinerary import (
     ItineraryDaySave,
     ItineraryItemCreate,
@@ -15,9 +15,8 @@ from schemas.itinerary import (
 router = APIRouter()
 
 
-def check_day(db: Session, trip_id: int, day_index: int) -> None:
-    """行程要存在，而且要有這一天（第 1 天到最後一天）"""
-    trip = get_trip_or_404(db, trip_id)
+def check_day(trip: Trip, day_index: int) -> None:
+    """這個行程要有這一天（第 1 天到最後一天）"""
     if not 1 <= day_index <= trip.days:
         raise HTTPException(status_code=404, detail=f"這個行程只有 {trip.days} 天")
 
@@ -36,18 +35,23 @@ def day_items(db: Session, trip_id: int, day_index: int) -> list[ItineraryItem]:
     "/api/trips/{trip_id}/days/{day_index}/itinerary",
     response_model=list[ItineraryItemOut],
 )
-def list_day_itinerary(trip_id: int, day_index: int, db: Session = Depends(get_db)):
-    check_day(db, trip_id, day_index)
-    return day_items(db, trip_id, day_index)
+def list_day_itinerary(
+    day_index: int,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
+    check_day(trip, day_index)
+    return day_items(db, trip.id, day_index)
 
 
 @router.get("/api/trips/{trip_id}/itinerary", response_model=list[ItineraryItemOut])
-def list_trip_itinerary(trip_id: int, db: Session = Depends(get_db)):
+def list_trip_itinerary(
+    trip: Trip = Depends(get_editable_trip), db: Session = Depends(get_db)
+):
     """整個行程每一天的每一站，照第幾天、第幾站排好"""
-    get_trip_or_404(db, trip_id)
     stmt = (
         select(ItineraryItem)
-        .where(ItineraryItem.trip_id == trip_id)
+        .where(ItineraryItem.trip_id == trip.id)
         .order_by(ItineraryItem.day_index, ItineraryItem.position)
     )
     return db.scalars(stmt).all()
@@ -59,19 +63,19 @@ def list_trip_itinerary(trip_id: int, db: Session = Depends(get_db)):
     status_code=201,
 )
 def add_to_day(
-    trip_id: int,
     day_index: int,
     payload: ItineraryItemCreate,
+    trip: Trip = Depends(get_editable_trip),
     db: Session = Depends(get_db),
 ):
-    check_day(db, trip_id, day_index)
+    check_day(trip, day_index)
 
     # 資料庫也會擋這兩種情況，先自己檢查，是為了回比較清楚的訊息
-    if db.get(TripPlace, (trip_id, payload.destination_id)) is None:
+    if db.get(TripPlace, (trip.id, payload.destination_id)) is None:
         raise HTTPException(status_code=400, detail="請先把這個景點加進景點池")
     scheduled = db.scalar(
         select(ItineraryItem).where(
-            ItineraryItem.trip_id == trip_id,
+            ItineraryItem.trip_id == trip.id,
             ItineraryItem.destination_id == payload.destination_id,
         )
     )
@@ -83,11 +87,11 @@ def add_to_day(
     # 排在這一天的最後面：目前最大的 position ＋ 1；這一天還是空的，就是 0
     last = db.scalar(
         select(func.max(ItineraryItem.position)).where(
-            ItineraryItem.trip_id == trip_id, ItineraryItem.day_index == day_index
+            ItineraryItem.trip_id == trip.id, ItineraryItem.day_index == day_index
         )
     )
     item = ItineraryItem(
-        trip_id=trip_id,
+        trip_id=trip.id,
         destination_id=payload.destination_id,
         day_index=day_index,
         position=0 if last is None else last + 1,
@@ -99,10 +103,13 @@ def add_to_day(
 
 
 @router.delete("/api/trips/{trip_id}/itinerary/{item_id}", status_code=204)
-def remove_from_day(trip_id: int, item_id: int, db: Session = Depends(get_db)):
-    get_trip_or_404(db, trip_id)
+def remove_from_day(
+    item_id: int,
+    trip: Trip = Depends(get_editable_trip),
+    db: Session = Depends(get_db),
+):
     item = db.get(ItineraryItem, item_id)
-    if item is None or item.trip_id != trip_id:
+    if item is None or item.trip_id != trip.id:
         raise HTTPException(status_code=404, detail="這個行程裡沒有這一站")
 
     day_index = item.day_index
@@ -110,7 +117,7 @@ def remove_from_day(trip_id: int, item_id: int, db: Session = Depends(get_db)):
     db.flush()  # 先把「刪除」送到資料庫（還沒存檔），下面重新編號時才不會算到它
 
     # 補位：剩下的重新編成 0、1、2……，中間不留空號
-    for new_position, rest in enumerate(day_items(db, trip_id, day_index)):
+    for new_position, rest in enumerate(day_items(db, trip.id, day_index)):
         rest.position = new_position
     db.commit()
 
@@ -120,13 +127,13 @@ def remove_from_day(trip_id: int, item_id: int, db: Session = Depends(get_db)):
     response_model=list[ItineraryItemOut],
 )
 def save_day(
-    trip_id: int,
     day_index: int,
     payload: ItineraryDaySave,
+    trip: Trip = Depends(get_editable_trip),
     db: Session = Depends(get_db),
 ):
-    check_day(db, trip_id, day_index)
-    items = {item.id: item for item in day_items(db, trip_id, day_index)}
+    check_day(trip, day_index)
+    items = {item.id: item for item in day_items(db, trip.id, day_index)}
 
     # 要送這一天的每一站：不能多、不能少、不能重複
     sent_ids = [row.id for row in payload.items]
@@ -153,4 +160,4 @@ def save_day(
         item.travel_mode = row.travel_mode
 
     db.commit()  # 全部都改好了，才一次存檔
-    return day_items(db, trip_id, day_index)
+    return day_items(db, trip.id, day_index)

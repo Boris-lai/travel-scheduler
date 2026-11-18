@@ -11,6 +11,7 @@ import {
   listTrips,
   searchDestinations,
 } from "@/app/lib/api";
+import { useMe } from "./lib/useMe";
 
 export default function Home() {
   const queryClient = useQueryClient(); // 拿到前端的小白板，等一下要讓某一筆作廢
@@ -61,14 +62,19 @@ export default function Home() {
     return () => es.close();
   }, [taskId, searched, queryClient]);
 
-  // 「加入到哪個行程」的選單要用的行程清單
-  const tripsQuery = useQuery({ queryKey: ["trips"], queryFn: listTrips });
+  // 「加入到哪個行程」的選單要用的行程清單：登入了才去拿
+  const { data: me } = useMe();
+  const tripsQuery = useQuery({
+    queryKey: ["trips"],
+    queryFn: listTrips,
+    enabled: !!me,
+  });
 
   // 選好的行程，景點池裡已經有哪些景點
   const poolQuery = useQuery({
     queryKey: ["tripPlaces", tripId],
     queryFn: () => listTripPlaces(tripId!), // ! 的意思是「這裡一定不是 null」，下一行保證了
-    enabled: tripId !== null, // 還沒選行程，就不用拿
+    enabled: tripId !== null && !!me, // 還沒選行程、或沒登入，就不用拿
   });
   const inPool = new Set(poolQuery.data?.map((place) => place.id)); // 已經加入的景點 id
 
@@ -80,7 +86,7 @@ export default function Home() {
 
   // 每張卡片右下角的按鈕
   function addButton(destinationId: number) {
-    if (tripId === null) return null; // 還沒選行程，就不顯示
+    if (tripId === null || !me) return null; // 還沒選行程、或沒登入，就不顯示
     if (inPool.has(destinationId)) {
       return (
         <span className="text-xs font-semibold text-gray-400">✓ 已加入</span>
@@ -124,31 +130,41 @@ export default function Home() {
         </button>
       </form>
 
-      <div className="mb-6 flex items-center gap-2 text-sm">
-        <span className="text-gray-600">加入到：</span>
-        <select
-          value={tripId ?? ""}
-          onChange={(e) =>
-            setTripId(e.target.value ? Number(e.target.value) : null)
-          }
-          className="rounded-lg border border-gray-300 bg-white px-3 py-1"
-        >
-          <option value="">選一個行程</option>
-          {tripsQuery.data?.map((trip) => (
-            <option key={trip.id} value={trip.id}>
-              {trip.title}
-            </option>
-          ))}
-        </select>
-        {tripsQuery.data?.length === 0 && (
-          <Link href="/trips" className="text-blue-600 hover:underline">
-            先去建立一個行程
+      {/* 登入了才顯示「加入到」選單；沒登入的話，提示先登入 */}
+      {me ? (
+        <div className="mb-6 flex items-center gap-2 text-sm">
+          <span className="text-gray-600">加入到：</span>
+          <select
+            value={tripId ?? ""}
+            onChange={(e) =>
+              setTripId(e.target.value ? Number(e.target.value) : null)
+            }
+            className="rounded-lg border border-gray-300 bg-white px-3 py-1"
+          >
+            <option value="">選一個行程</option>
+            {tripsQuery.data?.map((trip) => (
+              <option key={trip.id} value={trip.id}>
+                {trip.title}
+              </option>
+            ))}
+          </select>
+          {tripsQuery.data?.length === 0 && (
+            <Link href="/trips" className="text-blue-600 hover:underline">
+              先去建立一個行程
+            </Link>
+          )}
+          {addPlace.isError && (
+            <span className="text-red-600">{addPlace.error.message}</span>
+          )}
+        </div>
+      ) : (
+        <p className="mb-6 text-sm text-gray-500">
+          <Link href="/login" className="text-blue-600 hover:underline">
+            登入
           </Link>
-        )}
-        {addPlace.isError && (
-          <span className="text-red-600">{addPlace.error.message}</span>
-        )}
-      </div>
+          之後，可以把景點加進你的行程
+        </p>
+      )}
 
       {isError && (
         <p className="mb-4 rounded-lg bg-red-50 p-3 text-red-600">

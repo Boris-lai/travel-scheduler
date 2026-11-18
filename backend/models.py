@@ -47,6 +47,13 @@ class Trip(Base):
     title: Mapped[str] = mapped_column(String(100))
     days: Mapped[int] = mapped_column(Integer)  # 總共幾天
     start_date: Mapped[date | None] = mapped_column(Date)  # 出發日，可以不填
+    # 行程的主人（指向 users 表）。會員被刪掉，他的行程也一起刪掉。
+    # 可以是 None：舊的行程還沒有主人；第 4 段沒登入建立的行程也沒有
+    user_id: Mapped[int | None] = mapped_column(
+        # 外鍵要取名字，Alembic 退回上一版（downgrade）時才知道要刪哪一個
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_trips_user_id"),
+        index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

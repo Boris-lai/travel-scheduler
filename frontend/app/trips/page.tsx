@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { createTrip, deleteTrip, listTrips } from "@/app/lib/api";
+import { useMe } from "@/app/lib/useMe";
 
 export default function TripsPage() {
   const router = useRouter(); // 用程式換頁
@@ -14,6 +15,8 @@ export default function TripsPage() {
   const [days, setDays] = useState(3);
   const [startDate, setStartDate] = useState(""); // 沒選就是空字串
 
+  const { data: me, isPending: mePending } = useMe();
+
   const {
     data: trips,
     isPending,
@@ -21,6 +24,7 @@ export default function TripsPage() {
   } = useQuery({
     queryKey: ["trips"],
     queryFn: listTrips,
+    enabled: !!me,
   });
 
   // useMutation：會「改資料」的動作（新增、刪除）。呼叫 mutate(...) 才真的送出
@@ -46,6 +50,25 @@ export default function TripsPage() {
     if (confirm(`確定要刪除「${tripTitle}」嗎？景點池和每日行程會一起刪掉。`)) {
       remove.mutate(tripId);
     }
+  }
+
+  // 上面的 hook 都要先寫完，才能 return（React 規定 hook 每次都要照同樣的順序執行）
+  if (mePending) {
+    return <main className="mx-auto max-w-5xl p-6 text-gray-500">載入中…</main>;
+  }
+  if (!me) {
+    return (
+      <main className="mx-auto max-w-5xl p-6">
+        <h1 className="mb-6 text-3xl font-bold">我的行程</h1>
+        <p className="text-gray-500">
+          請先
+          <Link href="/login" className="text-blue-600 hover:underline">
+            登入
+          </Link>
+          ，才能建立和查看你的行程。
+        </p>
+      </main>
+    );
   }
 
   return (
