@@ -27,6 +27,11 @@ export type Trip = {
   created_at: string;
 };
 
+// 後端 TripCreateOut：建立行程時回的資料。沒登入建立的，會多一把鑰匙
+export type TripCreated = Trip & {
+  edit_token: string | null;
+};
+
 // 建立行程時要送的資料（schemas/trip.py 的 TripCreate）
 export type TripCreate = {
   title: string;

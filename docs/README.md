@@ -15,7 +15,7 @@
 | 5 | 前端入門（Next.js）＋ 搜尋頁 | [lesson-05.md](lesson-05.md) | ✅ 完成 |
 | 6 | 行程後端（行程、景點池、每日行程 API） | [lesson-06.md](lesson-06.md) | ✅ 完成 |
 | 7 | 編輯頁（拖拉 ＋ 地圖） | [lesson-07.md](lesson-07.md) | ✅ 完成 |
-| 8 | 登入、權限、分享 | [lesson-08.md](lesson-08.md) | 🚧 進行中（第 1～3 段 ✅） |
+| 8 | 登入、權限、分享 | [lesson-08.md](lesson-08.md) | 🚧 進行中（第 1～4 段 ✅） |
 | 9 | 畫面美化（照片、動畫、通知、導覽、首頁大圖） | — | ⏳ |
 | 10 | 部署 | — | ⏳ |
 
@@ -52,4 +52,6 @@
 | 登出後 | `window.location.href = "/"`，整個網站重新載入 | `resetQueries()` 擦掉小白板 ＋ `router.push("/")` | 第 8 課 |
 | 行程權限的檢查 | `assert_trip_owner` 掛在 `dependencies=[...]`，只檢查 | `get_editable_trip` 當成參數，檢查完把行程交給函式 | 第 8 課 |
 | `trips.user_id` | 只有索引，沒有外鍵 | 外鍵指向 `users`，刪會員連行程一起刪 | 第 8 課 |
+| 認領匿名行程 | `PATCH /api/trips/{id}/bind`，只檢查有沒有登入（知道編號就能認領別人的） | `POST /api/trips/{id}/claim`，要登入，也要鑰匙；認領後鑰匙清掉 | 第 8 課 |
+| 建立行程 | 一律先建成匿名的，有登入再打 `/bind` | 有登入就直接是主人，沒登入才有鑰匙 | 第 8 課 |
 | 雲端主機 | EC2 ＋ RDS | Lightsail 或 EC2，**第 10 課再決定** | 第 10 課 |

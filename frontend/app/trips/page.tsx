@@ -1,12 +1,14 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { createTrip, deleteTrip, listTrips } from "@/app/lib/api";
+import { addAnonTrip, removeAnonTrip } from "@/app/lib/anonTrips";
+import { createTrip, deleteTrip } from "@/app/lib/api";
 import { useMe } from "@/app/lib/useMe";
+import { useMyTrips } from "@/app/lib/useMyTrips";
 
 export default function TripsPage() {
   const router = useRouter(); // 用程式換頁
@@ -14,31 +16,35 @@ export default function TripsPage() {
   const [title, setTitle] = useState("");
   const [days, setDays] = useState(3);
   const [startDate, setStartDate] = useState(""); // 沒選就是空字串
+  const { data: me } = useMe();
+  // 登入了是帳號的行程，沒登入是這台電腦的匿名行程
+  const { data: trips, isPending, isError } = useMyTrips();
 
-  const { data: me, isPending: mePending } = useMe();
-
-  const {
-    data: trips,
-    isPending,
-    isError,
-  } = useQuery({
-    queryKey: ["trips"],
-    queryFn: listTrips,
-    enabled: !!me,
-  });
+  // 行程列表舊了：兩種都作廢，畫面上用到的那一種會重抓
+  function refreshTrips() {
+    queryClient.invalidateQueries({ queryKey: ["trips"] });
+    queryClient.invalidateQueries({ queryKey: ["anonTrips"] });
+  }
 
   // useMutation：會「改資料」的動作（新增、刪除）。呼叫 mutate(...) 才真的送出
   const create = useMutation({
     mutationFn: createTrip,
     onSuccess: (trip) => {
-      queryClient.invalidateQueries({ queryKey: ["trips"] }); // 行程列表舊了
+      if (trip.edit_token) {
+        // 沒登入建立的：把鑰匙收進瀏覽器，之後打這個行程的 API 才會帶上
+        addAnonTrip({ ...trip, edit_token: trip.edit_token });
+      }
+      refreshTrips();
       router.push(`/trips/${trip.id}`); // 建好直接進編輯頁
     },
   });
 
   const remove = useMutation({
     mutationFn: deleteTrip,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["trips"] }),
+    onSuccess: (_, tripId) => {
+      removeAnonTrip(tripId); // 如果是匿名行程，鑰匙也丟掉；不是的話，什麼都不會發生
+      refreshTrips();
+    },
   });
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -52,28 +58,20 @@ export default function TripsPage() {
     }
   }
 
-  // 上面的 hook 都要先寫完，才能 return（React 規定 hook 每次都要照同樣的順序執行）
-  if (mePending) {
-    return <main className="mx-auto max-w-5xl p-6 text-gray-500">載入中…</main>;
-  }
-  if (!me) {
-    return (
-      <main className="mx-auto max-w-5xl p-6">
-        <h1 className="mb-6 text-3xl font-bold">我的行程</h1>
-        <p className="text-gray-500">
-          請先
-          <Link href="/login" className="text-blue-600 hover:underline">
-            登入
-          </Link>
-          ，才能建立和查看你的行程。
-        </p>
-      </main>
-    );
-  }
-
   return (
     <main className="mx-auto max-w-5xl p-6">
       <h1 className="mb-6 text-3xl font-bold">我的行程</h1>
+
+      {/* me === null：確定沒登入（還在問的時候是 undefined，不顯示） */}
+      {me === null && (
+        <p className="mb-6 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+          你還沒
+          <Link href="/login" className="font-semibold underline">
+            登入
+          </Link>
+          ：行程的鑰匙只存在這台電腦的瀏覽器裡，換電腦或清除瀏覽器資料就打不開了。登入之後，會自動存到你的帳號。
+        </p>
+      )}
 
       <form
         onSubmit={handleSubmit}

@@ -1,3 +1,5 @@
+import secrets
+
 import requests
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -5,23 +7,33 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.dependencies import get_current_user, get_editable_trip
+from core.dependencies import get_current_user, get_editable_trip, get_optional_user
 from models import Destination, Trip, TripPlace, User
 from schemas.destination import DestinationOut
-from schemas.trip import TripCreate, TripOut, TripPlaceCreate, TripPlaceGoogleCreate
+from schemas.trip import (
+    TripCreate,
+    TripCreateOut,
+    TripOut,
+    TripPlaceCreate,
+    TripPlaceGoogleCreate,
+)
 from services.places import place_details
 
 
 router = APIRouter()
 
 
-@router.post("/api/trips", response_model=TripOut, status_code=201)
+@router.post("/api/trips", response_model=TripCreateOut, status_code=201)
 def create_trip(
     payload: TripCreate,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),  # 沒登入也可以建立
     db: Session = Depends(get_db),
 ):
-    trip = Trip(**payload.model_dump(), user_id=user.id)  # 誰建立的，誰就是主人
+    trip = Trip(**payload.model_dump())
+    if user is not None:
+        trip.user_id = user.id  # 有登入：誰建立的，誰就是主人
+    else:
+        trip.edit_token = secrets.token_urlsafe(32)  # 沒登入：沒有主人，發一把鑰匙
     db.add(trip)
     db.commit()
     db.refresh(trip)
@@ -48,6 +60,22 @@ def get_trip(trip: Trip = Depends(get_editable_trip)):
 def delete_trip(trip: Trip = Depends(get_editable_trip), db: Session = Depends(get_db)):
     db.delete(trip)
     db.commit()
+
+
+@router.post("/api/trips/{trip_id}/claim", response_model=TripOut)
+def claim_trip(
+    trip: Trip = Depends(get_editable_trip),  # 匿名行程：要有鑰匙才過得了這一關
+    user: User = Depends(get_current_user),  # 而且要登入，才知道要歸給誰
+    db: Session = Depends(get_db),
+):
+    """認領：把匿名行程歸到自己的帳號下"""
+    if trip.user_id is None:
+        trip.user_id = user.id
+        trip.edit_token = None  # 鑰匙作廢：之後靠手環（登入）就好
+        db.commit()
+        db.refresh(trip)
+    # 已經是自己的行程（例如重複認領）：什麼都不用做
+    return trip
 
 
 # ---------- 景點池 ----------

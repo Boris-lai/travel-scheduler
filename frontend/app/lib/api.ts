@@ -9,16 +9,35 @@ import type {
   TravelMode,
   Trip,
   TripCreate,
+  TripCreated,
   User,
 } from "@/app/lib/types";
+import {
+  anonTokenFor,
+  readAnonTrips,
+  removeAnonTrip,
+} from "@/app/lib/anonTrips";
 
 // 所有 API 共用的小幫手：送出請求 → 檢查有沒有成功 → 把回應變成物件
 // <T> 是「這支 API 會回什麼」的空格，呼叫時再填，例如 apiFetch<Trip[]>(...)
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  // 匿名行程：網址是 /api/trips/{id}/...，而且這台電腦有它的鑰匙，就放進 header
+  const match = path.match(/^\/api\/trips\/(\d+)/);
+  //👆 看網址是不是 /api/trips/ 加上數字開頭，是的話，match[1] 就是那個數字（行程編號）。
+  // /api/trips（列表、建立）後面沒有數字，就不會帶。
+  const editToken = match ? anonTokenFor(Number(match[1])) : null;
+  if (editToken) {
+    headers["X-Edit-Token"] = editToken;
+  }
+
   const res = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json" },
+    headers,
   });
+
   if (!res.ok) {
     // 後端的錯誤訊息放在 detail 裡，例如「找不到這個行程」
     const body = await res.json().catch(() => null);
@@ -60,7 +79,7 @@ export function getTrip(tripId: number) {
 }
 
 export function createTrip(input: TripCreate) {
-  return apiFetch<Trip>("/api/trips", {
+  return apiFetch<TripCreated>("/api/trips", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -180,4 +199,21 @@ export function login(input: LoginInput) {
 
 export function logout() {
   return apiFetch<void>("/api/logout", { method: "POST" });
+}
+
+// 認領：把匿名行程歸到自己的帳號下（要登入；鑰匙由 apiFetch 自動帶上）
+export function claimTrip(tripId: number) {
+  return apiFetch<Trip>(`/api/trips/${tripId}/claim`, { method: "POST" });
+}
+
+// 登入之後：把這台電腦上的匿名行程，全部認領到帳號下
+export async function claimAnonTrips() {
+  const trips = readAnonTrips();
+  // allSettled：一個失敗不會影響其他的，全部做完才回來
+  const results = await Promise.allSettled(trips.map((t) => claimTrip(t.id)));
+  results.forEach((result, i) => {
+    if (result.status === "fulfilled") {
+      removeAnonTrip(trips[i].id); // 認領成功，鑰匙用不到了
+    }
+  });
 }

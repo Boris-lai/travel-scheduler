@@ -54,6 +54,9 @@ class Trip(Base):
         ForeignKey("users.id", ondelete="CASCADE", name="fk_trips_user_id"),
         index=True
     )
+    # 匿名行程的鑰匙：沒登入建立的行程才有，認領之後就清掉
+    edit_token: Mapped[str | None] = mapped_column(String(64))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

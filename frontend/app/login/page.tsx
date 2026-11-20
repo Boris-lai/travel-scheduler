@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { login, signup } from "@/app/lib/api";
+import { claimAnonTrips, login, signup } from "@/app/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -20,9 +20,13 @@ export default function LoginPage() {
       isLogin
         ? login({ email, password })
         : signup({ email, password, name: name.trim() }),
-    onSuccess: (user) => {
+    onSuccess: async (user) => {
       // 後端已經用 cookie 發了手環。回來的會員資料直接放上小白板，導覽列馬上換成名字
       queryClient.setQueryData(["me"], user);
+      // 沒登入時建立的行程，現在認領到帳號下（認領完，按鈕才會從「處理中…」變回來）
+      await claimAnonTrips();
+      queryClient.invalidateQueries({ queryKey: ["trips"] });
+      queryClient.invalidateQueries({ queryKey: ["anonTrips"] });
       router.push("/trips");
     },
   });

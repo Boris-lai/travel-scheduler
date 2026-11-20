@@ -1,6 +1,6 @@
 # 第 8 課：登入、權限、分享
 
-> **狀態**：第 1 段（後端：註冊、登入、登出）✅ ／ 第 2 段（前端：登入／註冊畫面）✅ ／ 第 3 段（權限：行程有主人）✅
+> **狀態**：第 1 段（後端：註冊、登入、登出）✅ ／ 第 2 段（前端：登入／註冊畫面）✅ ／ 第 3 段（權限：行程有主人）✅ ／ 第 4 段（匿名行程）✅
 > **日期**：2026-11-14 ～
 > **對照原專案**：`backend/core/security.py`、`backend/core/dependencies.py`、`backend/router/auth.py`、`backend/schemas/auth.py`、`backend/router/share.py`、`frontend/app/context/AuthContext.tsx`、`frontend/app/components/layout/AuthCorner.tsx`、`frontend/app/lib/tripIndex.ts`
 
@@ -1888,3 +1888,880 @@ frontend/app/
 - 打你開著的後端（沒有 cookie）：`/api/trips`、`/api/trips/1`、每日行程、`/api/trips/999`、`DELETE /api/trips/1` 全部 `401`「請先登入」。
 - 用 Chrome 開一個沒有 cookie 的視窗看你的 3000（只看不改）：「我的行程」顯示「請先登入，才能建立和查看你的行程。」，而且沒有打 `/api/trips`；首頁顯示「登入之後，可以把景點加進你的行程」，沒有選單；`/trips/1` 顯示「請先登入」。主控台只有 `/trips/1` 那一行 `401`，正常。
 - Redis：1 個 session，是小明的，代表最後有登入回來。
+
+---
+
+## 第 4 段：匿名行程（沒登入也能建立，登入後認領）
+
+### 開始前的測試結果（2026-11-18）
+
+我先在另一份複製的前後端和資料庫測過：先用 curl 打 API，再用 Chrome 自動操作畫面。
+
+**API（curl）**
+
+| 誰 | 做什麼 | 結果 |
+|---|---|---|
+| 沒登入 | 建立「匿名小旅行」 | `201`，多回一個 `edit_token`（43 個字的亂碼）。資料庫裡 `user_id` 是空的 |
+| 帶鑰匙 | 讀行程、讀每日行程 | `200`。header 名稱寫成大寫、小寫都可以 |
+| 沒帶鑰匙、鑰匙錯 | 讀行程 | `403`「沒有這個行程的鑰匙」 |
+| 小明（有登入，沒鑰匙） | 讀這個匿名行程 | `403`：登入了也一樣，要有鑰匙 |
+| 小明（有登入，沒鑰匙） | **認領**這個匿名行程 | `403`「沒有這個行程的鑰匙」：**原專案的漏洞補上了** |
+| 沒登入（有鑰匙） | 認領 | `401`「請先登入」：不登入，不知道要歸給誰 |
+| 測試二號（有登入，有鑰匙） | 認領 | `200`，資料庫裡 `user_id` 變成 `3`，`edit_token` 清掉了 |
+| 測試二號 | 再認領一次 | `200`，什麼都沒變 |
+| 沒登入（拿舊鑰匙） | 讀這個已經被認領的行程 | `401`：現在有主人了，鑰匙沒用了 |
+| 小明 | 認領測試二號的行程 | `403`「這不是你的行程」 |
+| 沒登入（有鑰匙） | 刪除另一個匿名行程 | `204` |
+| 小明、測試二號 | 有主人的行程 | 跟第 3 段一樣 |
+
+**畫面（Chrome）**
+
+| 測試 | 結果 |
+|---|---|
+| 沒登入打開「我的行程」 | 黃色提示「你還沒登入：行程的鑰匙只存在這台電腦的瀏覽器裡……」，下面有建立表單 |
+| 建立「匿名小旅行」 | 進到編輯頁。瀏覽器的 `localStorage` 多了一筆，有行程編號和 43 個字的鑰匙 |
+| 打開編輯頁時的請求 | 讀行程、景點池、每日行程，都**自動帶了** `X-Edit-Token` |
+| 首頁的「加入到」 | 選得到「匿名小旅行」；搜京都、按「加入＋」→「✓ 已加入」 |
+| 編輯頁「排到第 1 天」 | 正常 |
+| 換一個瀏覽器（沒有鑰匙）打開同一個網址 | 「沒有這個行程的鑰匙」 |
+| 沒登入時刪除一個匿名行程 | 列表、`localStorage`、資料庫都不見了 |
+| 用測試二號登入 | 自動認領：「我的行程」出現「匿名小旅行」，`localStorage` 清空，黃色提示不見。編輯頁的第 1 天還在 |
+| 登出再看「我的行程」 | 空的：匿名行程已經被認領走了 |
+| 沒登入建立行程，再**註冊**新帳號 | 也會自動認領到新帳號 |
+| 小明在首頁選了行程、搜了京都，然後登出 | 「加入＋」都不見，選單回到「選一個行程」 |
+| 主控台 | 只有 401／403 的紅字（故意測的），沒有別的錯誤 |
+
+### 1. 學到的觀念
+
+#### 手環和鑰匙
+
+延續包廂的比喻：匿名行程是一間**沒有訂位人的包廂**。包廂一樣開在店裡（資料庫），店員給你一把**鑰匙**（`edit_token`），你放在口袋裡（瀏覽器的 `localStorage`）。
+
+| | 手環（session，第 1 段） | 鑰匙（`edit_token`，這一段） |
+|---|---|---|
+| 證明什麼 | 你**是誰**（會員幾號） | 你能開**這一間**包廂（不管你是誰） |
+| 什麼時候拿到 | 登入 | 沒登入時建立行程 |
+| 放在哪 | cookie（`HttpOnly`，JavaScript 讀不到） | `localStorage`（JavaScript 讀得到） |
+| 怎麼送給後端 | 瀏覽器**自動**帶上 | 我們**自己**放進 header：`X-Edit-Token` |
+| 用在哪 | 有主人的行程、我的行程、認領 | 沒有主人的行程 |
+
+#### 門口的檢查分兩條路
+
+```
+get_editable_trip
+  │ 行程不存在 → 404
+  ▼
+這個行程有沒有主人？
+  ├─ 有 ─► 看手環：沒登入 → 401；不是主人 → 403；是主人 → 放行
+  └─ 沒有 ─► 看鑰匙：沒帶、帶錯 → 403「沒有這個行程的鑰匙」；對了 → 放行
+```
+
+第 3 段一律要登入（`get_current_user`），現在改成 `get_optional_user`：沒登入也能走到「看鑰匙」那條路。
+
+比對鑰匙用 `secrets.compare_digest`，不用 `==`：`==` 遇到第一個不一樣的字就停，鑰匙前面猜對越多，比對就越久，別人可以從時間一點一點猜。`compare_digest` 不管哪裡不一樣，花的時間都一樣。
+
+header 的參數寫成 `x_edit_token`：FastAPI 會把底線換成 `-`，拿的就是 `X-Edit-Token`（header 不分大小寫）。
+
+#### 鑰匙只給一次
+
+只有**建立行程**時會回 `edit_token`（`TripCreateOut`），之後讀行程（`TripOut`）都不會回。鑰匙一旦外流，誰都能改這個行程，所以只交給建立的人，交一次就好。
+
+#### 瀏覽器的 `localStorage`
+
+`localStorage` 是瀏覽器給每個網站的一個**小抽屜**，存的是「名字 → 文字」，關掉瀏覽器也還在：
+
+```ts
+localStorage.setItem("anon_trips", JSON.stringify(trips)); // 存（只能存文字，所以先變成 JSON）
+JSON.parse(localStorage.getItem("anon_trips") ?? "[]");    // 拿（沒有就當成空陣列）
+```
+
+跟 cookie 最大的不同：`localStorage` **不會自動送給後端**。所以 `apiFetch` 要自己看：網址是 `/api/trips/{id}/...`，而且抽屜裡有這個行程的鑰匙，就放進 header。寫在 `apiFetch` 一個地方，景點池、每日行程、Google 搜尋框……所有行程的 API 就都會帶上。
+
+`localStorage` 是 JavaScript 讀得到的（不像 `HttpOnly` 的手環），網站萬一被塞了壞程式，鑰匙可能被偷走。匿名行程的鑰匙只能開一個行程，原專案也是這樣存，所以可以接受；重要的東西（例如登入的手環）就不要放這裡。
+
+#### 認領：要手環，也要鑰匙
+
+```python
+@router.post("/api/trips/{trip_id}/claim")
+def claim_trip(
+    trip: Trip = Depends(get_editable_trip),  # 匿名行程：要有鑰匙
+    user: User = Depends(get_current_user),  # 而且要登入，才知道要歸給誰
+    ...
+```
+
+原專案的認領（`PATCH /api/trips/{id}/bind`）**只檢查有沒有登入**。行程編號是 1、2、3……照順序來的，所以任何人登入之後，從 1 一路試下去，就能把**別人的匿名行程**全部認領走。我們的認領要先過 `get_editable_trip`，匿名行程沒有鑰匙就進不來。
+
+認領成功後，`edit_token` 清掉：行程有主人了，之後靠手環就好，鑰匙留著只是多一個被偷的風險。
+
+#### 登入之後，自動認領
+
+```ts
+await claimAnonTrips(); // 登入、註冊成功之後
+```
+
+把抽屜裡的每一把鑰匙都拿去認領，用 `Promise.allSettled` 一起送出去：其中一個失敗（例如那個行程已經被刪掉了），也不會影響其他的。認領成功的，就從抽屜拿掉。
+
+#### `useMyTrips()`：我的行程從哪來
+
+「我的行程」頁和首頁的「加入到」選單，都要知道「我的行程有哪些」：
+
+- **登入了**：問後端 `GET /api/trips`（第 3 段）。
+- **沒登入**：讀抽屜（`localStorage`），不用問後端。
+
+寫成一個 `useMyTrips()`，兩個地方共用。讀抽屜也交給 `useQuery`（`queryKey: ["anonTrips"]`），建立、刪除、認領之後讓它作廢，畫面就會跟著更新。
+
+### 2. 實作步驟
+
+這一段前後端都要改，還要用 Alembic 加一個欄位。
+
+#### 步驟 26：`models.py` 的 `Trip` 加 `edit_token`
+
+`user_id` 那一段（到 `)` 為止）的**下面**加上：
+
+```python
+    # 匿名行程的鑰匙：沒登入建立的行程才有，認領之後就清掉
+    edit_token: Mapped[str | None] = mapped_column(String(64))
+```
+
+#### 步驟 27：用 Alembic 加欄位
+
+```
+cd ~/Desktop/travel-scheduler/backend
+uv run alembic revision --autogenerate -m "add edit_token to trips"
+```
+
+確認最新遷移檔的 `upgrade()` 裡**只有這一行**：
+
+```python
+    op.add_column('trips', sa.Column('edit_token', sa.String(length=64), nullable=True))
+```
+
+這次沒有外鍵，不用取名字。確認沒問題就套用：
+
+```
+uv run alembic upgrade head
+```
+
+最後一行應該是 `Running upgrade 29da37c211c8 -> ……, add edit_token to trips`。
+
+#### 步驟 28：`schemas/trip.py` 加 `TripCreateOut`
+
+`TripOut` 的**下面**加上：
+
+```python
+# 出餐單：建立行程時回的資料。多了 edit_token：沒登入建立的行程，鑰匙只在這時候給一次
+class TripCreateOut(TripOut):
+    edit_token: str | None
+```
+
+`class TripCreateOut(TripOut)`：括號裡寫 `TripOut`，代表「`TripOut` 有的欄位它都有」，再多一個 `edit_token`。
+
+#### 步驟 29：`core/dependencies.py` 整個換掉
+
+```python
+import secrets
+
+from fastapi import Cookie, Depends, Header, HTTPException
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from core.security import get_session_user_id
+from models import User, Trip
+
+
+def get_optional_user(
+    # 參數叫 sid，FastAPI 就去拿名字叫 sid 的 cookie
+    sid: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """有登入就回傳會員，沒登入回 None（不擋人）"""
+    if sid is None:
+        return None  # 沒戴手環
+    user_id = get_session_user_id(sid)
+    if user_id is None:
+        return None  # 手環過期了，或已經登出
+    return db.get(User, user_id)
+
+
+def get_current_user(user: User | None = Depends(get_optional_user)) -> User:
+    """一定要登入：沒登入就回 401"""
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def get_editable_trip(
+    trip_id: int,  # 從網址的 /api/trips/{trip_id}/... 拿
+    user: User | None = Depends(get_optional_user),
+    # 參數名的底線會變成 -，所以拿的是 header 裡的 X-Edit-Token（header 不分大小寫）
+    x_edit_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Trip:
+    """能不能動這個行程：有主人的看手環（登入），沒主人的看鑰匙（edit_token）"""
+    trip = db.get(Trip, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="找不到這個行程")
+
+    # 有主人：要登入，而且是主人
+    if trip.user_id is not None:
+        if user is None:
+            raise HTTPException(status_code=401, detail="請先登入")
+        if trip.user_id != user.id:
+            raise HTTPException(status_code=403, detail="這不是你的行程")
+        return trip
+
+    # 沒有主人（匿名行程）：要出示建立時拿到的鑰匙
+    if (
+        x_edit_token is None
+        or trip.edit_token is None
+        # compare_digest：不管哪裡不一樣，比對的時間都一樣長，別人沒辦法從時間猜鑰匙
+        or not secrets.compare_digest(x_edit_token.encode(), trip.edit_token.encode())
+    ):
+        raise HTTPException(status_code=403, detail="沒有這個行程的鑰匙")
+    return trip
+```
+
+跟第 3 段比：
+
+- `get_optional_user`、`get_current_user` 沒變。
+- `get_editable_trip`：`user` 改用 `get_optional_user`（沒登入也能進來）；多了 `x_edit_token` 參數；有主人走原本的檢查，沒主人看鑰匙。
+- 最上面多了 `import secrets`，`fastapi` 那行多了 `Header`。
+
+#### 步驟 30：`router/trips.py` 改三個地方
+
+**① 最上面的 import**，從第一行到 `from services.places import place_details` 為止，整段換成：
+
+```python
+import secrets
+
+import requests
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from core.dependencies import get_current_user, get_editable_trip, get_optional_user
+from models import Destination, Trip, TripPlace, User
+from schemas.destination import DestinationOut
+from schemas.trip import (
+    TripCreate,
+    TripCreateOut,
+    TripOut,
+    TripPlaceCreate,
+    TripPlaceGoogleCreate,
+)
+from services.places import place_details
+```
+
+**② `create_trip`** 整個換掉：
+
+```python
+@router.post("/api/trips", response_model=TripCreateOut, status_code=201)
+def create_trip(
+    payload: TripCreate,
+    user: User | None = Depends(get_optional_user),  # 沒登入也可以建立
+    db: Session = Depends(get_db),
+):
+    trip = Trip(**payload.model_dump())
+    if user is not None:
+        trip.user_id = user.id  # 有登入：誰建立的，誰就是主人
+    else:
+        trip.edit_token = secrets.token_urlsafe(32)  # 沒登入：沒有主人，發一把鑰匙
+    db.add(trip)
+    db.commit()
+    db.refresh(trip)
+    return trip
+```
+
+**③ `delete_trip` 的下面**，加上認領：
+
+```python
+@router.post("/api/trips/{trip_id}/claim", response_model=TripOut)
+def claim_trip(
+    trip: Trip = Depends(get_editable_trip),  # 匿名行程：要有鑰匙才過得了這一關
+    user: User = Depends(get_current_user),  # 而且要登入，才知道要歸給誰
+    db: Session = Depends(get_db),
+):
+    """認領：把匿名行程歸到自己的帳號下"""
+    if trip.user_id is None:
+        trip.user_id = user.id
+        trip.edit_token = None  # 鑰匙作廢：之後靠手環（登入）就好
+        db.commit()
+        db.refresh(trip)
+    # 已經是自己的行程（例如重複認領）：什麼都不用做
+    return trip
+```
+
+存檔之後，uvicorn 會自己重開。
+
+#### 步驟 31：先用 `/docs` 測後端
+
+打開 http://localhost:8000/docs 。你現在是登入狀態（cookie 不分連接埠），要先登出，才建得出匿名行程。
+
+1. `POST /api/logout` → `sid` 留空 → `204`。
+2. `POST /api/trips`，填 `{"title": "docs 測試", "days": 1}` → `201`，回應最後有 `"edit_token": "……"`。把 `id` 記下來，`edit_token` 那串複製起來。
+3. `GET /api/trips/{trip_id}`：`trip_id` 填剛剛的 `id`，`x-edit-token` **留空** → `403`「沒有這個行程的鑰匙」。
+4. 同一支，`x-edit-token` **貼上**那串鑰匙 → `200`。
+5. `DELETE /api/trips/{trip_id}`，一樣填 `id` 和鑰匙 → `204`，刪掉。
+
+先**不用**登入回來，步驟 39 一開始就是沒登入的狀態。
+
+#### 步驟 32：前端 `app/lib/types.ts`
+
+`TripCreate` 那一段（`// 建立行程時要送的資料`）的**上面**加上：
+
+```ts
+// 後端 TripCreateOut：建立行程時回的資料。沒登入建立的，會多一把鑰匙
+export type TripCreated = Trip & {
+  edit_token: string | null;
+};
+```
+
+`Trip & { ... }`：「`Trip` 有的欄位都有，再多一個 `edit_token`」，跟後端的 `class TripCreateOut(TripOut)` 是同一個意思。
+
+#### 步驟 33：新增 `app/lib/anonTrips.ts`（抽屜裡的鑰匙）
+
+```ts
+import type { Trip } from "@/app/lib/types";
+
+// 沒登入時建立的行程：行程本身在資料庫，鑰匙（edit_token）存在這台電腦的瀏覽器裡
+export type AnonTrip = Trip & { edit_token: string };
+
+const KEY = "anon_trips"; // 在 localStorage 裡的名字
+
+export function readAnonTrips(): AnonTrip[] {
+  try {
+    return JSON.parse(localStorage.getItem(KEY) ?? "[]");
+  } catch {
+    return []; // 內容壞掉，或不在瀏覽器裡（伺服器上沒有 localStorage），都當成沒有
+  }
+}
+
+function writeAnonTrips(trips: AnonTrip[]) {
+  localStorage.setItem(KEY, JSON.stringify(trips));
+}
+
+export function addAnonTrip(trip: AnonTrip) {
+  writeAnonTrips([trip, ...readAnonTrips()]);
+}
+
+export function removeAnonTrip(tripId: number) {
+  writeAnonTrips(readAnonTrips().filter((t) => t.id !== tripId));
+}
+
+// 這台電腦有沒有這個行程的鑰匙
+export function anonTokenFor(tripId: number): string | null {
+  return readAnonTrips().find((t) => t.id === tripId)?.edit_token ?? null;
+}
+```
+
+- 抽屜裡存的是整個行程（名稱、天數……）加上鑰匙，「我的行程」頁沒登入時，直接拿來顯示，不用問後端。
+- `readAnonTrips` 包在 `try` 裡：Next.js 會先在伺服器上把畫面畫一次，伺服器上沒有 `localStorage`，用了會出錯，就當成沒有。
+
+#### 步驟 34：前端 `app/lib/api.ts` 改四個地方
+
+**① 最上面的 import** 整段換成（`types` 多了 `TripCreated`，下面多一行 `anonTrips`）：
+
+```ts
+import type {
+  Destination,
+  ItineraryItem,
+  LegEstimate,
+  LoginInput,
+  PlaceSuggestion,
+  SearchResponse,
+  SignupInput,
+  TravelMode,
+  Trip,
+  TripCreate,
+  TripCreated,
+  User,
+} from "@/app/lib/types";
+import { anonTokenFor, readAnonTrips, removeAnonTrip } from "@/app/lib/anonTrips";
+```
+
+**② `apiFetch` 的開頭**：從 `async function apiFetch` 到 `const res = await fetch(...)` 那一段的 `});` 為止，換成：
+
+```ts
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // 匿名行程：網址是 /api/trips/{id}/...，而且這台電腦有它的鑰匙，就放進 header
+  const match = path.match(/^\/api\/trips\/(\d+)/);
+  const editToken = match ? anonTokenFor(Number(match[1])) : null;
+  if (editToken) {
+    headers["X-Edit-Token"] = editToken;
+  }
+
+  const res = await fetch(path, {
+    ...init,
+    headers,
+  });
+```
+
+`path.match(/^\/api\/trips\/(\d+)/)`：看網址是不是 `/api/trips/` 加上數字開頭，是的話，`match[1]` 就是那個數字（行程編號）。`/api/trips`（列表、建立）後面沒有數字，就不會帶。
+
+**③ `createTrip`** 換成（回傳的型別改成 `TripCreated`）：
+
+```ts
+export function createTrip(input: TripCreate) {
+  return apiFetch<TripCreated>("/api/trips", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+```
+
+**④ 最下面**加上：
+
+```ts
+// 認領：把匿名行程歸到自己的帳號下（要登入；鑰匙由 apiFetch 自動帶上）
+export function claimTrip(tripId: number) {
+  return apiFetch<Trip>(`/api/trips/${tripId}/claim`, { method: "POST" });
+}
+
+// 登入之後：把這台電腦上的匿名行程，全部認領到帳號下
+export async function claimAnonTrips() {
+  const trips = readAnonTrips();
+  // allSettled：一個失敗不會影響其他的，全部做完才回來
+  const results = await Promise.allSettled(trips.map((t) => claimTrip(t.id)));
+  results.forEach((result, i) => {
+    if (result.status === "fulfilled") {
+      removeAnonTrip(trips[i].id); // 認領成功，鑰匙用不到了
+    }
+  });
+}
+```
+
+#### 步驟 35：新增 `app/lib/useMyTrips.ts`
+
+```ts
+import { useQuery } from "@tanstack/react-query";
+
+import { readAnonTrips } from "@/app/lib/anonTrips";
+import { listTrips } from "@/app/lib/api";
+import type { Trip } from "@/app/lib/types";
+import { useMe } from "@/app/lib/useMe";
+
+// 我的行程：登入了問後端；沒登入就讀這台電腦瀏覽器裡的匿名行程
+export function useMyTrips() {
+  const { data: me, isPending: mePending } = useMe();
+
+  const serverTrips = useQuery({
+    queryKey: ["trips"],
+    queryFn: listTrips,
+    enabled: !!me,
+  });
+  const anonTrips = useQuery<Trip[]>({
+    queryKey: ["anonTrips"],
+    queryFn: readAnonTrips, // 不用問後端，直接讀 localStorage
+    enabled: !mePending && !me, // 確定沒登入才讀
+  });
+
+  return me ? serverTrips : anonTrips;
+}
+```
+
+- `useQuery<Trip[]>`：抽屜裡的是 `AnonTrip`（多了鑰匙），這裡跟 TypeScript 說「當成一般的 `Trip` 就好」，兩邊才能用同一種型別。
+- `enabled: !mePending && !me`：還在問「我是誰」的時候先不要讀，免得登入的人也先閃一下抽屜裡的東西。
+
+#### 步驟 36：`app/trips/page.tsx` 整個換掉
+
+```tsx
+"use client";
+
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { addAnonTrip, removeAnonTrip } from "@/app/lib/anonTrips";
+import { createTrip, deleteTrip } from "@/app/lib/api";
+import { useMe } from "@/app/lib/useMe";
+import { useMyTrips } from "@/app/lib/useMyTrips";
+
+export default function TripsPage() {
+  const router = useRouter(); // 用程式換頁
+  const queryClient = useQueryClient();
+  const [title, setTitle] = useState("");
+  const [days, setDays] = useState(3);
+  const [startDate, setStartDate] = useState(""); // 沒選就是空字串
+  const { data: me } = useMe();
+  // 登入了是帳號的行程，沒登入是這台電腦的匿名行程
+  const { data: trips, isPending, isError } = useMyTrips();
+
+  // 行程列表舊了：兩種都作廢，畫面上用到的那一種會重抓
+  function refreshTrips() {
+    queryClient.invalidateQueries({ queryKey: ["trips"] });
+    queryClient.invalidateQueries({ queryKey: ["anonTrips"] });
+  }
+
+  // useMutation：會「改資料」的動作（新增、刪除）。呼叫 mutate(...) 才真的送出
+  const create = useMutation({
+    mutationFn: createTrip,
+    onSuccess: (trip) => {
+      if (trip.edit_token) {
+        // 沒登入建立的：把鑰匙收進瀏覽器，之後打這個行程的 API 才會帶上
+        addAnonTrip({ ...trip, edit_token: trip.edit_token });
+      }
+      refreshTrips();
+      router.push(`/trips/${trip.id}`); // 建好直接進編輯頁
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: deleteTrip,
+    onSuccess: (_, tripId) => {
+      removeAnonTrip(tripId); // 如果是匿名行程，鑰匙也丟掉；不是的話，什麼都不會發生
+      refreshTrips();
+    },
+  });
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    create.mutate({ title: title.trim(), days, start_date: startDate || null });
+  }
+
+  function handleDelete(tripId: number, tripTitle: string) {
+    if (confirm(`確定要刪除「${tripTitle}」嗎？景點池和每日行程會一起刪掉。`)) {
+      remove.mutate(tripId);
+    }
+  }
+
+  return (
+    <main className="mx-auto max-w-5xl p-6">
+      <h1 className="mb-6 text-3xl font-bold">我的行程</h1>
+
+      {/* me === null：確定沒登入（還在問的時候是 undefined，不顯示） */}
+      {me === null && (
+        <p className="mb-6 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+          你還沒
+          <Link href="/login" className="font-semibold underline">
+            登入
+          </Link>
+          ：行程的鑰匙只存在這台電腦的瀏覽器裡，換電腦或清除瀏覽器資料就打不開了。登入之後，會自動存到你的帳號。
+        </p>
+      )}
+
+      <form
+        onSubmit={handleSubmit}
+        className="mb-8 flex flex-wrap items-end gap-3 rounded-xl bg-white p-5 shadow"
+      >
+        <label className="flex min-w-48 flex-1 flex-col gap-1 text-sm">
+          行程名稱
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+            placeholder="例如：京都三日遊"
+            className="rounded-lg border border-gray-300 px-3 py-2"
+          />
+        </label>
+        <label className="flex w-24 flex-col gap-1 text-sm">
+          天數
+          <input
+            type="number"
+            min={1}
+            max={60}
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            className="rounded-lg border border-gray-300 px-3 py-2"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          出發日（可以不填）
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="rounded-lg border border-gray-300 px-3 py-2"
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={create.isPending}
+          className="rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white hover:bg-blue-700 disabled:bg-gray-400"
+        >
+          {create.isPending ? "建立中…" : "建立行程"}
+        </button>
+        {create.isError && (
+          <p className="w-full text-sm text-red-600">
+            建立失敗：{create.error.message}
+          </p>
+        )}
+      </form>
+
+      {isPending && <p className="text-gray-500">載入中…</p>}
+      {isError && (
+        <p className="text-red-600">
+          讀取行程失敗：請確認後端（uvicorn）有在跑
+        </p>
+      )}
+      {trips?.length === 0 && (
+        <p className="text-gray-500">還沒有行程，先建立一個吧！</p>
+      )}
+
+      <ul className="grid gap-4 sm:grid-cols-2">
+        {trips?.map((trip) => (
+          <li
+            key={trip.id}
+            className="flex items-center justify-between gap-3 rounded-xl bg-white p-5 shadow"
+          >
+            <Link href={`/trips/${trip.id}`} className="flex-1">
+              <h2 className="text-xl font-bold hover:text-blue-600">
+                {trip.title}
+              </h2>
+              <p className="text-sm text-gray-500">
+                {trip.days} 天{trip.start_date && `・${trip.start_date} 出發`}
+              </p>
+            </Link>
+            <button
+              type="button"
+              onClick={() => handleDelete(trip.id, trip.title)}
+              className="rounded-lg px-3 py-1 text-sm text-red-600 hover:bg-red-50"
+            >
+              刪除
+            </button>
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+跟第 3 段比：
+
+- 行程從 `useMyTrips()` 拿，不用自己 `useQuery`。
+- 拿掉「請先登入」那一頁：沒登入也能建立。改成 `me === null` 時，上面顯示黃色提示。`me === null` 是「確定沒登入」，還在問的時候 `me` 是 `undefined`，不會閃一下。
+- 建立成功，如果有 `edit_token`，就收進抽屜。
+- 刪除成功，也從抽屜拿掉（有主人的行程本來就不在抽屜裡，拿不掉也沒關係）。
+
+#### 步驟 37：`app/page.tsx`（首頁）改五個地方
+
+**① import**：`api` 那一段和下面的 `useMe` 那一行，換成（`api` 少了 `listTrips`，`useMe` 換成 `useMyTrips`）：
+
+```tsx
+import {
+  addTripPlace,
+  listTripPlaces,
+  searchDestinations,
+} from "@/app/lib/api";
+import { useMyTrips } from "@/app/lib/useMyTrips";
+```
+
+**② `tripsQuery`**：從 `const { data: me } = useMe();` 到 `});` 為止（上面那行註解也一起），換成：
+
+```tsx
+  // 「加入到哪個行程」的選單：登入了是帳號的行程，沒登入是這台電腦的匿名行程
+  const { data: trips } = useMyTrips();
+  // 選的行程要在清單裡才算數（例如登出之後，原本選的行程就不在清單裡了）
+  const selectedTrip = trips?.find((trip) => trip.id === tripId);
+```
+
+**③ `poolQuery` 裡的 `enabled`** 換成：
+
+```tsx
+    enabled: !!selectedTrip, // 還沒選行程（或選的不在清單裡），就不用拿
+```
+
+**④ `addButton` 的第一行**換成：
+
+```tsx
+    if (!selectedTrip) return null; // 還沒選行程（或選的不在清單裡），就不顯示
+```
+
+**⑤ 「加入到」那一整段**：從 `{/* 登入了才顯示「加入到」選單` 到 `之後，可以把景點加進你的行程` 下面的 `)}` 為止，換成：
+
+```tsx
+      <div className="mb-6 flex items-center gap-2 text-sm">
+        <span className="text-gray-600">加入到：</span>
+        <select
+          value={selectedTrip?.id ?? ""}
+          onChange={(e) =>
+            setTripId(e.target.value ? Number(e.target.value) : null)
+          }
+          className="rounded-lg border border-gray-300 bg-white px-3 py-1"
+        >
+          <option value="">選一個行程</option>
+          {trips?.map((trip) => (
+            <option key={trip.id} value={trip.id}>
+              {trip.title}
+            </option>
+          ))}
+        </select>
+        {trips?.length === 0 && (
+          <Link href="/trips" className="text-blue-600 hover:underline">
+            先去建立一個行程
+          </Link>
+        )}
+        {addPlace.isError && (
+          <span className="text-red-600">{addPlace.error.message}</span>
+        )}
+      </div>
+```
+
+為什麼用 `selectedTrip`，不直接看 `tripId`？在首頁登出時，頁面不會重新載入，`tripId` 還記著小明的行程，但選單已經換成抽屜裡的匿名行程了。「選的行程要在清單裡才算數」，就不會出現按了就 401 的「加入＋」。
+
+#### 步驟 38：`app/login/page.tsx` 改兩個地方
+
+**① import** 多一個 `claimAnonTrips`：
+
+```tsx
+import { claimAnonTrips, login, signup } from "@/app/lib/api";
+```
+
+**② `onSuccess`** 換成：
+
+```tsx
+    onSuccess: async (user) => {
+      // 後端已經用 cookie 發了手環。回來的會員資料直接放上小白板，導覽列馬上換成名字
+      queryClient.setQueryData(["me"], user);
+      // 沒登入時建立的行程，現在認領到帳號下（認領完，按鈕才會從「處理中…」變回來）
+      await claimAnonTrips();
+      queryClient.invalidateQueries({ queryKey: ["trips"] });
+      queryClient.invalidateQueries({ queryKey: ["anonTrips"] });
+      router.push("/trips");
+    },
+```
+
+登入、註冊都走這裡，所以兩種都會自動認領。
+
+#### 步驟 39：測試
+
+確認 uvicorn、`npm run dev` 都在跑。打開 http://localhost:3000 ，右上角應該是「登入／註冊」（步驟 31 登出了）；如果不是，先按登出。
+
+**① 沒登入建立行程**
+
+1. 我的行程 → 上面有黃色提示。
+2. 建立「匿名小旅行」，2 天 → 進到編輯頁。
+3. `Cmd + Option + I` → **Application** → 左邊 **Local Storage** → `http://localhost:3000` → 有一筆 `anon_trips`，裡面有行程編號和 `edit_token`。
+4. 換到 **Network** 分頁，按 `F5`，點 `places` 那一行 → **Request Headers** 裡有 `x-edit-token`：`apiFetch` 自己放進去的。
+
+**② 加景點、排行程**
+
+1. 首頁 →「加入到」選「匿名小旅行」→ 搜「京都」→ 按兩個「加入＋」。
+2. 回到匿名小旅行的編輯頁 → 景點池有 2 個 → 把一個「排到第 1 天」。
+
+**③ 沒有鑰匙打不開**
+
+1. 記下網址（例如 `http://localhost:3000/trips/7`）。
+2. 開一個 Chrome **無痕視窗**（`Cmd + Shift + N`），貼上同一個網址 →「沒有這個行程的鑰匙」。無痕視窗有自己的抽屜，裡面是空的。關掉無痕視窗。
+3. 看資料庫：
+
+   ```
+   cd ~/Desktop/travel-scheduler
+   docker compose exec db psql -U travel -d travel_scheduler -c "SELECT id, title, user_id, edit_token FROM trips"
+   ```
+
+   匿名小旅行的 `user_id` 是空的，`edit_token` 是一長串。
+
+**④ 漏洞補上了：沒有鑰匙不能認領**
+
+1. 打開 http://localhost:8000/docs →`POST /api/login`，用**小明**登入。
+2. `POST /api/trips/{trip_id}/claim`：`trip_id` 填匿名小旅行的編號，`x-edit-token` **留空** → `403`「沒有這個行程的鑰匙」。原專案在這裡會認領成功。
+3. `POST /api/logout`，登出（下一步要從 3000 登入，才會觸發自動認領）。
+
+**⑤ 登入後自動認領**
+
+1. 回到 3000，按 `F5` → 右上角是「登入／註冊」。
+2. 用**測試二號**登入 → 跳到我的行程，出現「匿名小旅行」，黃色提示不見了。
+3. Application → Local Storage → `anon_trips` 變成 `[]`。
+4. 點進匿名小旅行 → 第 1 天排好的景點還在（現在是靠登入打開的）。
+5. 再跑一次 ③ 的 `SELECT`：匿名小旅行的 `user_id` 是 `3`，`edit_token` 是空的。
+
+**⑥ 先建行程，再註冊**
+
+1. 登出 → 我的行程：空的（匿名小旅行已經被認領走了）。
+2. 建立「註冊前的行程」。
+3. 右上角「登入／註冊」→ 切到「註冊」→ 名字「匿名三號」、Email `anon3@example.com`、密碼 `password123` → 我的行程出現「註冊前的行程」。
+
+最後登出，用**小明**登入回來。測試二號、匿名三號的行程留著沒關係。
+
+### 3. 這一段結束後的資料夾
+
+```
+backend/
+├── alembic/versions/
+│   └── xxxx_add_edit_token_to_trips.py ← 新增（Alembic 產生的）
+├── core/
+│   └── dependencies.py    ← 改：get_editable_trip 分兩條路（手環、鑰匙）
+├── models.py              ← 改：Trip 加 edit_token
+├── router/
+│   └── trips.py           ← 改：沒登入也能建立、認領 API
+└── schemas/
+    └── trip.py            ← 改：TripCreateOut
+
+frontend/app/
+├── lib/
+│   ├── anonTrips.ts       ← 新增：抽屜（localStorage）裡的匿名行程和鑰匙
+│   ├── api.ts             ← 改：apiFetch 自動帶鑰匙、claimTrip、claimAnonTrips
+│   ├── types.ts           ← 改：TripCreated
+│   └── useMyTrips.ts      ← 新增：我的行程（登入問後端，沒登入讀抽屜）
+├── login/
+│   └── page.tsx           ← 改：登入、註冊後自動認領
+├── page.tsx               ← 改：「加入到」也能選匿名行程
+└── trips/
+    └── page.tsx           ← 改：沒登入也能建立
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 匿名行程存在哪 | 資料庫，`user_id` 空的 ＋ `edit_token` | 一樣 |
+| 瀏覽器存什麼 | `localStorage`：行程編號、名稱、天數、出發日、建立時間、鑰匙 | `localStorage`：整個行程 ＋ 鑰匙 |
+| 建立行程 | 一律先建成匿名的；有登入的話，前端再打 `/bind` 認領 | 有登入就直接是主人；沒登入才有鑰匙 |
+| 認領 API | `PATCH /api/trips/{id}/bind`，**只檢查有沒有登入**：知道編號就能認領別人的匿名行程 | `POST /api/trips/{id}/claim`，要登入，**也要鑰匙** |
+| 認領之後 | 鑰匙還留在資料庫 | 鑰匙清掉 |
+| 比對鑰匙 | `!=` | `secrets.compare_digest` |
+| 怎麼帶鑰匙 | `apiFetch` 從網址找出行程編號，自動帶 `X-Edit-Token` | 一樣 |
+| 登出時 | 清掉瀏覽器裡的匿名行程 | 不清：還沒認領的留著，下次登入再認領 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| 沒登入建立行程，一進編輯頁就「沒有這個行程的鑰匙」 | `trips/page.tsx` 沒有 `addAnonTrip`，或 `apiFetch` 沒放 header | 看 Application 有沒有 `anon_trips`、Network 的請求有沒有 `x-edit-token`；對照步驟 34、36 |
+| 在 `/docs` 建立的行程，回應裡 `edit_token` 是 `null` | 還是登入狀態（cookie 不分連接埠），建出來的是小明的行程 | 先 `POST /api/logout` |
+| 登入後，匿名行程沒有出現在我的行程 | `login/page.tsx` 少了 `claimAnonTrips()` | 對照步驟 38。抽屜裡的鑰匙還在，改好之後登出、再登入一次就會認領 |
+| Console 出現 `localStorage is not defined` | 在伺服器上用了 `localStorage`（例如寫在元件最外面，沒有包 `try`） | 只透過 `anonTrips.ts` 的函式讀寫 |
+| 清除瀏覽器資料後，匿名行程不見了 | 抽屜被清空，鑰匙沒了。行程其實還在資料庫，只是沒人打得開 | 正常，所以黃色提示請使用者登入 |
+| uvicorn 印 `NameError: name 'secrets' is not defined` | `trips.py` 或 `dependencies.py` 最上面少了 `import secrets` | 對照步驟 29、30 |
+
+### 📌 這一段的 3 個重點
+
+1. **匿名行程一樣存在資料庫，瀏覽器只存鑰匙**：有主人的看手環（登入），沒主人的看鑰匙（`X-Edit-Token`），都在 `get_editable_trip` 這一個門口檢查。
+2. **鑰匙要自己帶**：`localStorage` 不會自動送給後端，所以 `apiFetch` 看到 `/api/trips/{id}` 就自己放進 header；手環（cookie）是瀏覽器自動帶的。
+3. **認領要手環，也要鑰匙**：只看登入的話，知道編號就能搶走別人的匿名行程（原專案的漏洞）。認領之後鑰匙作廢。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 為什麼 `edit_token` 只在建立行程時回傳，`GET /api/trips/{id}` 不回？
+2. 原專案的認領只檢查有沒有登入，會發生什麼壞事？（提示：行程編號是 1、2、3……照順序來的）
+3. 為什麼鑰匙要在 `apiFetch` 裡自己放進 header，手環卻不用？
+4. 認領成功後，為什麼要把資料庫裡的 `edit_token` 清掉？
+
+<details>
+<summary>點開看解答</summary>
+
+1. 鑰匙等於「改這個行程的權限」。每多一個回傳鑰匙的地方，就多一條外流的路：例如第 5 段的分享頁如果也用了會回鑰匙的出餐單，看分享的人就拿到鑰匙，可以改你的行程了。而且讀行程本來就要先有鑰匙，回給他也沒有用。只在建立時交給建立的人一次，最安全。
+2. 任何人登入之後，從行程編號 1 開始一路試認領，所有還沒認領的匿名行程都會被他搶走，原本的人再也打不開（自己的鑰匙對有主人的行程沒用了）。我們的認領要先過 `get_editable_trip`，沒有鑰匙就是 403。
+3. cookie 是瀏覽器管的，打同一個網站時**自動**帶上；`localStorage` 只是一個抽屜，瀏覽器不會主動拿出來送給後端。所以鑰匙要我們自己拿出來，放進 header。寫在 `apiFetch` 一個地方，所有行程的 API 就都會帶上。
+4. 認領之後，行程有主人了，`get_editable_trip` 只看手環，鑰匙其實已經用不到。但只要鑰匙還在資料庫裡，它就是一個可能外流的東西（例如之後改了檢查的寫法，不小心又讓鑰匙能用）。用不到的權限就收回來，越少越安全。
+
+</details>
+
+#### 你的實作紀錄（2026-11-20）
+
+- 後端 4 個檔案、前端 7 個檔案都正確，其中 8 個跟教材一模一樣。差別只有：`schemas/trip.py` 的 `TripCreateOut` 放在檔案最後面（寫在 `TripOut` 後面就能用），你還順手把 `TripPlaceGoogleCreate` 那行放錯位置的註解搬回正確的地方；`api.ts` 長的兩行被編輯器折成多行，`path.match` 下面加了你自己的說明；`models.py` 多一行空白。型別檢查、lint 都通過。
+- 遷移檔 `c4ad9ce9d209` 只有加 `edit_token` 一行，資料庫在最新版。
+- 你的資料庫（只讀，鑰匙沒有印出來）：
+  - 「匿名小行程」（id 8）主人是測試二號（3），鑰匙已經清掉；景點池 2 個、第 1 天排了 1 個。步驟 39 ①～⑤ 都有做。
+  - 「註冊前的行程」（id 9）主人是匿名三號（**id 5**），鑰匙也清掉了。第 2 段說的「下一個新帳號會是 5」應驗了：2 和 4 被重複註冊用掉了。
+  - 沒有還沒認領的匿名行程。
+- 打你開著的後端（沒有 cookie）：匿名小行程現在有主人了，不帶手環、帶錯鑰匙、想認領，都是 `401`「請先登入」。`/docs` 裡每支行程 API 都多了 `x-edit-token` 欄位，建立行程的出餐單是 `TripCreateOut`。
+- 用 Chrome 開一個沒有 cookie、抽屜也是空的視窗（只看不改）：「我的行程」有黃色提示、建立表單、「還沒有行程」；首頁「加入到」只有「選一個行程」和「先去建立一個行程」。沒有送出任何 POST，主控台沒有錯誤。
+- Redis：1 個 session，是小明的，最後有登入回來。
