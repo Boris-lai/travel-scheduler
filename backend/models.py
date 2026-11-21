@@ -56,7 +56,11 @@ class Trip(Base):
     )
     # 匿名行程的鑰匙：沒登入建立的行程才有，認領之後就清掉
     edit_token: Mapped[str | None] = mapped_column(String(64))
-
+    # 分享連結裡的那串亂碼：按「產生分享連結」才有，停止分享就清掉。
+    # unique：兩個行程不能用同一串；index：用這串找行程會比較快
+    share_token: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

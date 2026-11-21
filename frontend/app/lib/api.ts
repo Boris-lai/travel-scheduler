@@ -5,6 +5,8 @@ import type {
   LoginInput,
   PlaceSuggestion,
   SearchResponse,
+  SharedTrip,
+  ShareResult,
   SignupInput,
   TravelMode,
   Trip,
@@ -216,4 +218,23 @@ export async function claimAnonTrips() {
       removeAnonTrip(trips[i].id); // 認領成功，鑰匙用不到了
     }
   });
+}
+
+// ---------- 分享 ----------
+
+// 產生分享連結（已經分享過，會回同一串）
+export function shareTrip(tripId: number) {
+  return apiFetch<ShareResult>(`/api/trips/${tripId}/share`, {
+    method: "POST",
+  });
+}
+
+// 停止分享：傳出去的連結就打不開了
+export function stopSharing(tripId: number) {
+  return apiFetch<void>(`/api/trips/${tripId}/share`, { method: "DELETE" });
+}
+
+// 看分享的行程：不用登入、不用鑰匙
+export function getSharedTrip(shareToken: string) {
+  return apiFetch<SharedTrip>(`/api/share/${encodeURIComponent(shareToken)}`);
 }

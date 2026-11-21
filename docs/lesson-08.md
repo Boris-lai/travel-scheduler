@@ -1,6 +1,6 @@
 # 第 8 課：登入、權限、分享
 
-> **狀態**：第 1 段（後端：註冊、登入、登出）✅ ／ 第 2 段（前端：登入／註冊畫面）✅ ／ 第 3 段（權限：行程有主人）✅ ／ 第 4 段（匿名行程）✅
+> **狀態**：第 1 段（後端：註冊、登入、登出）✅ ／ 第 2 段（前端：登入／註冊畫面）✅ ／ 第 3 段（權限：行程有主人）✅ ／ 第 4 段（匿名行程）✅ ／ 第 5 段（分享）✅
 > **日期**：2026-11-14 ～
 > **對照原專案**：`backend/core/security.py`、`backend/core/dependencies.py`、`backend/router/auth.py`、`backend/schemas/auth.py`、`backend/router/share.py`、`frontend/app/context/AuthContext.tsx`、`frontend/app/components/layout/AuthCorner.tsx`、`frontend/app/lib/tripIndex.ts`
 
@@ -2765,3 +2765,720 @@ frontend/app/
 - 打你開著的後端（沒有 cookie）：匿名小行程現在有主人了，不帶手環、帶錯鑰匙、想認領，都是 `401`「請先登入」。`/docs` 裡每支行程 API 都多了 `x-edit-token` 欄位，建立行程的出餐單是 `TripCreateOut`。
 - 用 Chrome 開一個沒有 cookie、抽屜也是空的視窗（只看不改）：「我的行程」有黃色提示、建立表單、「還沒有行程」；首頁「加入到」只有「選一個行程」和「先去建立一個行程」。沒有送出任何 POST，主控台沒有錯誤。
 - Redis：1 個 session，是小明的，最後有登入回來。
+
+---
+
+## 第 5 段：分享（任何人都能看，不能改）
+
+### 開始前的測試結果（2026-11-20）
+
+我先在另一份複製的前後端和資料庫測過：先用 curl 打 API，再用 Chrome 自動操作畫面。
+
+**API（curl）**
+
+| 誰 | 做什麼 | 結果 |
+|---|---|---|
+| 小明 | 京都三日遊「產生分享連結」 | `200`，`{"share_token": "……"}`，22 個字的亂碼 |
+| 小明 | 再按一次 | 回**同一串**：之前傳出去的連結繼續有效 |
+| 沒登入 | 用那串看分享的行程 | `200`：名稱、天數、出發日、每一站。**沒有**行程編號、主人、鑰匙 |
+| 沒登入 | 亂打一串 | `404`「找不到這個分享，可能已經停止分享了」 |
+| 沒登入 | 把分享的那串當成鑰匙（`X-Edit-Token`）去讀、刪行程 | 都不行：分享只能看 |
+| 測試二號 | 替小明的行程產生分享連結、停止分享 | `403`「這不是你的行程」：**原專案的漏洞補上了** |
+| 沒登入 | 替小明的行程產生分享連結 | `401` |
+| 小明 | 停止分享 | `204`，舊連結變成 `404` |
+| 小明 | 再產生一次 | 拿到**不一樣**的一串 |
+| 沒登入 | 匿名行程帶鑰匙產生分享連結 | `200`；沒帶鑰匙 `403` |
+
+**遷移檔**：`downgrade` 退回、再 `upgrade`，都成功。
+
+**畫面（Chrome）**
+
+| 測試 | 結果 |
+|---|---|
+| 小明在編輯頁按「產生分享連結」 | 出現綠色的「分享中」：連結、複製、打開看看、停止分享 |
+| 按「複製」 | 剪貼簿裡就是那個網址；按鈕變「已複製 ✓」，2 秒後變回來 |
+| 按 F5 | 還是同一個連結 |
+| 沒登入的人打開連結 | 「別人分享給你的行程（只能看，不能改）」，京都三日遊、3 天的分頁（12/20～12/22） |
+| 第 1 天 | 每一站的名稱、時間、「↓ 大眾運輸」「↓ 走路」；最後一站沒有箭頭 |
+| 第 2 天、第 3 天 | 八坂神社；「這一天還沒有排景點」 |
+| 能不能改 | 頁面上沒有任何輸入框、選單、儲存或刪除的按鈕 |
+| 停止分享 | 變回「產生分享連結」；舊連結顯示「找不到這個分享，可能已經停止分享了」 |
+| 再分享一次 | 新的連結，跟舊的不一樣 |
+| 「打開看看」 | 開一個新分頁，就是分享頁 |
+| 測試二號打開小明的行程 | 「這不是你的行程」，看不到分享區 |
+| 沒登入的匿名行程 | 也能產生分享連結，別人打得開 |
+
+### 1. 學到的觀念
+
+#### 第三種通行證：參觀券
+
+到這一段，包廂（行程）有三種通行證：
+
+| | 手環（第 1 段） | 鑰匙（第 4 段） | 參觀券（這一段） |
+|---|---|---|---|
+| 是什麼 | `sid` cookie | `edit_token` | 分享連結裡的 `share_token` |
+| 證明什麼 | 你是誰 | 你能**改**這一間 | 你能**看**這一間 |
+| 誰拿得到 | 登入的人 | 沒登入時建立行程的人 | 主人傳給誰，誰就有 |
+| 能看 | ✅ 自己的 | ✅ | ✅ |
+| 能改 | ✅ 自己的 | ✅ | ❌ |
+
+參觀券跟鑰匙是**不同的兩串**，存在不同的欄位。所以拿參觀券去打 `/api/trips/{id}/...`，`get_editable_trip` 根本不認得，一律擋下來。
+
+#### 分享連結的那串亂碼，就是密碼
+
+```
+http://localhost:3000/share/kp0NCaqEItlk8lEhdS4fyA
+```
+
+**誰拿到這個網址，誰就能看**，不用登入。所以：
+
+- **不能用行程編號**（`/share/1`）：編號是 1、2、3……照順序的，別人從 1 一路試，就能看光所有人的行程。22 個字的亂碼猜不到。
+- **停止分享，就是把亂碼清掉**：舊連結馬上變 404。再分享一次會發**新的**一串，之前拿到舊連結的人還是看不到。
+
+#### 分享頁只給「看」需要的東西
+
+`GET /api/share/{share_token}` 用自己的出餐單 `SharedTripOut`：名稱、天數、出發日、每一站。**沒有**行程編號、主人是誰、鑰匙。看的人用不到，就不給。
+
+它也只有「讀」：分享相關的 API 裡，能改東西的只有「產生分享連結」和「停止分享」，這兩支都要先過 `get_editable_trip`。
+
+#### 原專案的漏洞
+
+原專案「產生分享連結」（`PATCH /api/trips/{id}/share`）**沒有檢查是不是主人**。也就是說，任何人只要知道行程編號，就能替**別人的行程**產生分享連結，再用那個連結把行程看光。我們的 `POST /api/trips/{id}/share` 第一行就是 `Depends(get_editable_trip)`。
+
+#### `unique=True` ＋ `index=True`
+
+```python
+share_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+```
+
+- `unique`：兩個行程不能用同一串（不然一個連結會打開兩個行程）。
+- `index`：分享頁是「用這串找行程」，有索引比較快。
+
+兩個一起寫，Alembic 會建一個**不能重複的索引**，名字自動取成 `ix_trips_share_token`。第 3 段的外鍵要自己取名字，這次不用：索引本來就有名字，退回上一版時刪得掉。
+
+#### 前端：`dayDate` 搬家
+
+分享頁也要顯示「第 1 天 12/20」，所以把編輯頁裡的 `dayDate` 搬到 `app/lib/dayDate.ts`，兩頁一起用。同一段程式寫兩份，之後改了一份忘了另一份，兩頁就會不一樣。
+
+地圖直接用第 7 課的 `TripMap`：它只要「第幾天」和「這一天的每一站」，從哪裡拿來的都可以。
+
+### 2. 實作步驟
+
+這一段前後端都要改，還要用 Alembic 加一個欄位。
+
+#### 步驟 40：`models.py` 的 `Trip` 加 `share_token`
+
+`edit_token` 那一行的**下面**加上：
+
+```python
+    # 分享連結裡的那串亂碼：按「產生分享連結」才有，停止分享就清掉。
+    # unique：兩個行程不能用同一串；index：用這串找行程會比較快
+    share_token: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True
+    )
+```
+
+#### 步驟 41：用 Alembic 加欄位
+
+```
+cd ~/Desktop/travel-scheduler/backend
+uv run alembic revision --autogenerate -m "add share_token to trips"
+```
+
+確認最新遷移檔的 `upgrade()` 裡是這兩行（第二行最後是 `unique=True`）：
+
+```python
+    op.add_column('trips', sa.Column('share_token', sa.String(length=64), nullable=True))
+    op.create_index(op.f('ix_trips_share_token'), 'trips', ['share_token'], unique=True)
+```
+
+確認沒問題就套用：
+
+```
+uv run alembic upgrade head
+```
+
+最後一行應該是 `Running upgrade c4ad9ce9d209 -> ……, add share_token to trips`。
+
+#### 步驟 42：`schemas/trip.py` 的 `TripOut` 加一行
+
+`created_at: datetime` 的**下面**加上：
+
+```python
+    share_token: str | None  # 有分享才有：分享連結裡的那串亂碼
+```
+
+編輯頁要知道「現在有沒有在分享」，才知道要顯示「產生分享連結」還是綠色的分享區。`TripOut` 只會回給主人（或有鑰匙的人），所以放這裡沒關係。`TripCreateOut` 是從 `TripOut` 來的，也會跟著多這一欄。
+
+#### 步驟 43：新增 `schemas/share.py`
+
+```python
+from datetime import date
+
+from pydantic import BaseModel
+
+from schemas.itinerary import ItineraryItemOut
+
+
+# 出餐單：產生分享連結之後回的資料
+class ShareOut(BaseModel):
+    share_token: str
+
+
+# 出餐單：分享頁看到的行程。只放「看」需要的東西：沒有行程編號、主人、鑰匙
+class SharedTripOut(BaseModel):
+    title: str
+    days: int
+    start_date: date | None
+    items: list[ItineraryItemOut]  # 每一天的每一站，照第幾天、第幾站排好
+```
+
+#### 步驟 44：新增 `router/share.py`
+
+```python
+import secrets
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from core.dependencies import get_editable_trip
+from models import ItineraryItem, Trip
+from schemas.share import SharedTripOut, ShareOut
+
+router = APIRouter()
+
+
+@router.post("/api/trips/{trip_id}/share", response_model=ShareOut)
+def share_trip(
+    trip: Trip = Depends(get_editable_trip),  # 能編輯這個行程的人才能分享（原專案漏了這一關）
+    db: Session = Depends(get_db),
+):
+    """產生分享連結"""
+    if trip.share_token is None:
+        trip.share_token = secrets.token_urlsafe(16)
+        db.commit()
+    # 已經分享過：回同一串，之前傳出去的連結繼續有效
+    return {"share_token": trip.share_token}
+
+
+@router.delete("/api/trips/{trip_id}/share", status_code=204)
+def stop_sharing(
+    trip: Trip = Depends(get_editable_trip), db: Session = Depends(get_db)
+):
+    """停止分享：亂碼清掉，傳出去的連結就打不開了"""
+    trip.share_token = None
+    db.commit()
+
+
+@router.get("/api/share/{share_token}", response_model=SharedTripOut)
+def get_shared_trip(share_token: str, db: Session = Depends(get_db)):
+    """看分享的行程：不用登入、不用鑰匙，有連結就能看，但只能看"""
+    trip = db.scalar(select(Trip).where(Trip.share_token == share_token))
+    if trip is None:
+        raise HTTPException(status_code=404, detail="找不到這個分享，可能已經停止分享了")
+
+    stmt = (
+        select(ItineraryItem)
+        .where(ItineraryItem.trip_id == trip.id)
+        .order_by(ItineraryItem.day_index, ItineraryItem.position)
+    )
+    return {
+        "title": trip.title,
+        "days": trip.days,
+        "start_date": trip.start_date,
+        "items": db.scalars(stmt).all(),
+    }
+```
+
+- 產生分享連結：已經有了就回同一串，沒有才產生。`token_urlsafe(16)` 是 22 個字。
+- 看分享的行程：回的是一個 dict，`items` 裡是資料庫拿出來的每一站，`response_model` 會照 `SharedTripOut` 整理好（跟每日行程一樣）。
+
+#### 步驟 45：`main.py` 整個換掉（多了 `share`）
+
+```python
+from fastapi import FastAPI
+from router import auth, destinations, itinerary, legs, places, search, share, trips
+
+app = FastAPI()
+
+app.include_router(auth.router)
+app.include_router(destinations.router)
+app.include_router(search.router)
+app.include_router(trips.router)
+app.include_router(itinerary.router)
+app.include_router(places.router)
+app.include_router(legs.router)
+app.include_router(share.router)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+```
+
+存檔之後，uvicorn 會自己重開。
+
+#### 步驟 46：先用 `/docs` 測後端
+
+確認右上角是「哈囉，小明」（上一段最後登入回來了），打開 http://localhost:8000/docs ：
+
+1. `POST /api/trips/{trip_id}/share`，`trip_id` 填 `1` → `200`，回 `{"share_token": "……"}`。把那串複製起來。
+2. 同一支再按一次 → 一樣的那串。
+3. `GET /api/share/{share_token}`，貼上 → `200`，有 `title`、`days`、`start_date`、`items`，**沒有** `id`。
+4. `DELETE /api/trips/{trip_id}/share`，`trip_id` 填 `1` → `204`。
+5. 再跑一次第 3 點 → `404`「找不到這個分享，可能已經停止分享了」。
+
+#### 步驟 47：前端 `app/lib/types.ts`
+
+**① `Trip`** 的 `created_at` 下面加一行：
+
+```ts
+  share_token: string | null; // 有分享才有：分享連結裡的那串亂碼
+```
+
+**② 最下面**加上：
+
+```ts
+// 後端 POST /api/trips/{id}/share 回傳的樣子（schemas/share.py 的 ShareOut）
+export type ShareResult = {
+  share_token: string;
+};
+
+// 後端 GET /api/share/{token} 回傳的樣子（schemas/share.py 的 SharedTripOut）：只能看的行程
+export type SharedTrip = {
+  title: string;
+  days: number;
+  start_date: string | null;
+  items: ItineraryItem[]; // 每一天的每一站
+};
+```
+
+#### 步驟 48：前端 `app/lib/api.ts`
+
+**① 最上面的 `import type`**：`SearchResponse` 和 `SignupInput` 中間，加兩行：
+
+```ts
+  SharedTrip,
+  ShareResult,
+```
+
+**② 最下面**加上：
+
+```ts
+// ---------- 分享 ----------
+
+// 產生分享連結（已經分享過，會回同一串）
+export function shareTrip(tripId: number) {
+  return apiFetch<ShareResult>(`/api/trips/${tripId}/share`, {
+    method: "POST",
+  });
+}
+
+// 停止分享：傳出去的連結就打不開了
+export function stopSharing(tripId: number) {
+  return apiFetch<void>(`/api/trips/${tripId}/share`, { method: "DELETE" });
+}
+
+// 看分享的行程：不用登入、不用鑰匙
+export function getSharedTrip(shareToken: string) {
+  return apiFetch<SharedTrip>(`/api/share/${encodeURIComponent(shareToken)}`);
+}
+```
+
+`encodeURIComponent`：亂碼裡可能有 `-`、`_`，不會出問題，但網址裡放「別人給的東西」，習慣上都先編碼（第 7 課的搜尋框也是）。
+
+#### 步驟 49：`dayDate` 搬家
+
+**① 新增** `app/lib/dayDate.ts`：
+
+```ts
+// 第 N 天的日期 ＝ 出發日 ＋（N − 1）天。後端沒有存，前端自己算
+// 編輯頁和分享頁都會用到，所以搬到這裡共用
+export function dayDate(startDate: string | null, day: number) {
+  if (!startDate) return "";
+  const date = new Date(`${startDate}T00:00:00`);
+  date.setDate(date.getDate() + day - 1);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+```
+
+**② `app/trips/[tripId]/page.tsx`**：把原本的 `dayDate` 函式**整個刪掉**（從 `// 第 N 天的日期` 那行註解，到函式的 `}`），然後 `import type { ItineraryItem, ...` 那行的**上面**加：
+
+```tsx
+import { dayDate } from "@/app/lib/dayDate";
+```
+
+#### 步驟 50：新增 `app/components/ShareBox.tsx`，放到編輯頁
+
+**① 新增** `app/components/ShareBox.tsx`：
+
+```tsx
+"use client";
+
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+
+import { shareTrip, stopSharing } from "@/app/lib/api";
+import type { Trip } from "@/app/lib/types";
+
+// 編輯頁上面的分享區：產生連結、複製、停止分享
+export default function ShareBox({ trip }: { trip: Trip }) {
+  const queryClient = useQueryClient();
+  const [copied, setCopied] = useState(false);
+
+  // 分享的狀態改了：讓這個行程作廢重抓，trip.share_token 才會是新的
+  function refresh() {
+    queryClient.invalidateQueries({ queryKey: ["trip", trip.id] });
+  }
+  const share = useMutation({
+    mutationFn: () => shareTrip(trip.id),
+    onSuccess: refresh,
+  });
+  const stop = useMutation({
+    mutationFn: () => stopSharing(trip.id),
+    onSuccess: refresh,
+  });
+
+  if (!trip.share_token) {
+    return (
+      <div className="flex items-center gap-3 text-sm">
+        <button
+          type="button"
+          onClick={() => share.mutate()}
+          disabled={share.isPending}
+          className="rounded-full border border-blue-600 px-4 py-1 font-semibold text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+        >
+          {share.isPending ? "產生中…" : "產生分享連結"}
+        </button>
+        {share.isError && (
+          <span className="text-red-600">{share.error.message}</span>
+        )}
+      </div>
+    );
+  }
+
+  // 行程資料是瀏覽器自己去拿的，這個元件只會在瀏覽器裡畫，所以可以用 window
+  const url = `${window.location.origin}/share/${trip.share_token}`;
+
+  async function copy() {
+    await navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000); // 2 秒後變回「複製」
+  }
+
+  function handleStop() {
+    if (confirm("停止分享之後，傳出去的連結就打不開了。確定嗎？")) {
+      stop.mutate();
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-green-50 p-3 text-sm">
+      <span className="font-semibold text-green-800">分享中：</span>
+      <input
+        readOnly
+        value={url}
+        onFocus={(e) => e.target.select()}
+        aria-label="分享連結"
+        className="min-w-0 flex-1 rounded border border-green-200 bg-white px-2 py-1"
+      />
+      <button
+        type="button"
+        onClick={copy}
+        className="rounded-full bg-green-600 px-3 py-1 font-semibold text-white hover:bg-green-700"
+      >
+        {copied ? "已複製 ✓" : "複製"}
+      </button>
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className="text-green-700 hover:underline"
+      >
+        打開看看
+      </a>
+      <button
+        type="button"
+        onClick={handleStop}
+        disabled={stop.isPending}
+        className="px-2 text-gray-500 hover:text-red-600 disabled:opacity-50"
+      >
+        停止分享
+      </button>
+    </div>
+  );
+}
+```
+
+- `navigator.clipboard.writeText(url)`：寫進剪貼簿。瀏覽器只在 `https` 或 `localhost` 才讓網頁用剪貼簿，第 10 課上線後要用 https。
+- `setTimeout(..., 2000)`：2 秒後把「已複製 ✓」變回「複製」。
+- `target="_blank"`：在新分頁打開；`rel="noreferrer"`：新分頁不會知道是從哪裡點過去的。
+
+**② 編輯頁** `app/trips/[tripId]/page.tsx`，import 多一行（`GooglePlaceSearch` 那行的下面）：
+
+```tsx
+import ShareBox from "@/app/components/ShareBox";
+```
+
+**③ 同一個檔案**，`{trip.days} 天…` 那個 `<p>` 的**下面**、`{error && (` 的**上面**，加上：
+
+```tsx
+      <div className="mb-6">
+        <ShareBox trip={trip} />
+      </div>
+```
+
+#### 步驟 51：新增 `app/share/[token]/page.tsx`（分享頁）
+
+資料夾 `share`、`[token]` 都要自己建（中括號也要打），網址就是 `/share/xxxx`。
+
+```tsx
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { useParams } from "next/navigation";
+import { useState } from "react";
+
+import TripMap from "@/app/components/TripMap";
+import { getSharedTrip } from "@/app/lib/api";
+import { dayDate } from "@/app/lib/dayDate";
+import type { TravelMode } from "@/app/lib/types";
+
+const MODE_LABELS: Record<TravelMode, string> = {
+  WALK: "走路",
+  DRIVE: "開車",
+  TRANSIT: "大眾運輸",
+};
+
+// "09:00:00" → "09:00"
+function hhmm(time: string | null) {
+  return time?.slice(0, 5) ?? "";
+}
+
+// 分享頁：拿到連結的人都能看，但只能看，不能改
+export default function SharePage() {
+  // 網址 /share/xxxx 裡的「xxxx」。資料夾叫 [token]，所以這裡就叫 token
+  const { token } = useParams<{ token: string }>();
+  const [activeDay, setActiveDay] = useState(1);
+
+  const shareQuery = useQuery({
+    queryKey: ["share", token],
+    queryFn: () => getSharedTrip(token),
+    retry: false, // 連結錯了、或已經停止分享（404），就直接顯示
+  });
+
+  if (shareQuery.isError) {
+    return (
+      <main className="mx-auto max-w-5xl p-6">
+        <p className="text-red-600">{shareQuery.error.message}</p>
+      </main>
+    );
+  }
+
+  const trip = shareQuery.data;
+  if (!trip) {
+    return <main className="mx-auto max-w-5xl p-6 text-gray-500">載入中…</main>;
+  }
+
+  const dayNumbers = Array.from({ length: trip.days }, (_, i) => i + 1);
+  const dayItems = trip.items.filter((item) => item.day_index === activeDay);
+
+  return (
+    <main className="mx-auto max-w-5xl p-6">
+      <p className="mb-2 text-sm text-gray-500">
+        別人分享給你的行程（只能看，不能改）
+      </p>
+      <h1 className="text-3xl font-bold">{trip.title}</h1>
+      <p className="mb-6 text-gray-500">
+        {trip.days} 天{trip.start_date && `・${trip.start_date} 出發`}
+      </p>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        {dayNumbers.map((day) => (
+          <button
+            key={day}
+            type="button"
+            onClick={() => setActiveDay(day)}
+            className={`rounded-full px-4 py-1 text-sm font-semibold ${
+              day === activeDay
+                ? "bg-blue-600 text-white"
+                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+            }`}
+          >
+            第 {day} 天 {dayDate(trip.start_date, day)}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <section className="rounded-xl bg-white p-5 shadow">
+          {dayItems.length === 0 && (
+            <p className="text-sm text-gray-500">這一天還沒有排景點</p>
+          )}
+          <ol className="flex flex-col gap-2">
+            {dayItems.map((item, index) => (
+              <li
+                key={item.id}
+                className="rounded-lg border border-gray-200 px-3 py-2"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold">{item.destination.place_name}</p>
+                    {(item.arrival_time || item.departure_time) && (
+                      <p className="text-sm text-gray-500">
+                        {hhmm(item.arrival_time)} ～ {hhmm(item.departure_time)}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {/* 有選交通方式、而且不是最後一站，才顯示 */}
+                {item.travel_mode && index < dayItems.length - 1 && (
+                  <p className="mt-1 pl-10 text-xs text-gray-500">
+                    ↓ {MODE_LABELS[item.travel_mode]}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+        </section>
+        <TripMap day={activeDay} items={dayItems} />
+      </div>
+    </main>
+  );
+}
+```
+
+- 跟編輯頁長得很像，但**沒有** `useMutation`、沒有輸入框、沒有拖拉：只能看。
+- 不用 `useMe()`：誰都能看，不用知道看的人是誰。
+- `retry: false`：連結錯了或停止分享了，後端回 404，直接顯示，不要重試。
+
+#### 步驟 52：測試
+
+確認 uvicorn、`npm run dev` 都在跑，右上角是「哈囉，小明」。
+
+**① 產生分享連結**
+
+1. 我的行程 → 京都三日遊 → 標題下面有「產生分享連結」→ 按下去 → 變成綠色的「分享中：」和一個連結。
+2. 按「複製」→ 變成「已複製 ✓」，2 秒後變回來。
+3. 按 `F5` → 還是同一個連結。
+
+**② 別人看到的樣子**
+
+1. 開一個 Chrome **無痕視窗**（`Cmd + Shift + N`），貼上連結。
+2. 上面寫「別人分享給你的行程（只能看，不能改）」，右上角是「登入／註冊」：看的人不用登入。
+3. 第 1 天：每一站的名稱、時間，有選交通方式的會有「↓ 大眾運輸」這種箭頭；右邊是地圖。
+4. 點「第 2 天」→ 八坂神社。「第 3 天」→ 這一天還沒有排景點。
+5. 頁面上找不到任何可以改的東西。
+
+**③ 別人不能替你分享**
+
+1. 在**無痕視窗**打開 http://localhost:3000/login ，用**測試二號**登入。
+2. 打開 http://localhost:3000/trips/1 →「這不是你的行程」，沒有分享區。
+3. 同一個無痕視窗打開 http://localhost:8000/docs →`POST /api/trips/{trip_id}/share`，`trip_id` 填 `1` → `403`「這不是你的行程」。原專案在這裡會產生連結成功。
+
+**④ 停止分享**
+
+1. 回到**原本的視窗**（小明），按「停止分享」→ 確定 → 變回「產生分享連結」。
+2. 無痕視窗打開剛剛複製的分享連結 →「找不到這個分享，可能已經停止分享了」。
+3. 原本的視窗再按一次「產生分享連結」→ 新的連結跟剛剛的**不一樣**。按「打開看看」→ 新分頁打開分享頁。
+
+**⑤ 看資料庫**
+
+```
+cd ~/Desktop/travel-scheduler
+docker compose exec db psql -U travel -d travel_scheduler -c "SELECT id, title, share_token FROM trips"
+```
+
+京都三日遊有一串 `share_token`，其他是空的。
+
+關掉無痕視窗就好（它的登入狀態不會影響原本的視窗）。京都三日遊要不要繼續分享，看你自己。
+
+### 3. 這一段結束後的資料夾
+
+```
+backend/
+├── alembic/versions/
+│   └── xxxx_add_share_token_to_trips.py ← 新增（Alembic 產生的）
+├── main.py                ← 改：掛上 share
+├── models.py              ← 改：Trip 加 share_token
+├── router/
+│   └── share.py           ← 新增：產生分享連結、停止分享、看分享的行程
+└── schemas/
+    ├── share.py           ← 新增：ShareOut、SharedTripOut
+    └── trip.py            ← 改：TripOut 加 share_token
+
+frontend/app/
+├── components/
+│   └── ShareBox.tsx       ← 新增：編輯頁的分享區
+├── lib/
+│   ├── api.ts             ← 改：shareTrip、stopSharing、getSharedTrip
+│   ├── dayDate.ts         ← 新增：從編輯頁搬出來，兩頁共用
+│   └── types.ts           ← 改：Trip.share_token、ShareResult、SharedTrip
+├── share/[token]/
+│   └── page.tsx           ← 新增：分享頁（只能看）
+└── trips/[tripId]/
+    └── page.tsx           ← 改：放上 ShareBox、dayDate 改用 import
+```
+
+### 4. 跟原專案對照
+
+| 項目 | 原專案 | 我們 |
+|---|---|---|
+| 產生分享連結 | `PATCH /api/trips/{id}/share`，**沒有檢查是不是主人**：知道編號就能替別人的行程產生連結、把它看光 | `POST /api/trips/{id}/share`，要先過 `get_editable_trip` |
+| 停止分享 | 沒有 | `DELETE /api/trips/{id}/share`，舊連結馬上失效 |
+| 分享頁回傳 | 行程編號、主人編號、每一站，照天數分好組 | 名稱、天數、出發日、每一站（前端自己照天數分）；沒有編號、主人 |
+| 分享之後 | 行程會出現在首頁的「探索」（`is_public` 預設是公開） | 只有拿到連結的人看得到。首頁探索先不做 |
+| 亂碼長度 | `token_urlsafe(16)` | 一樣 |
+| 分享頁的交通 | 顯示交通方式和時間 | 只顯示交通方式 |
+
+### 5. 常見踩雷
+
+| 症狀 | 原因 | 解法 |
+|---|---|---|
+| 打開分享連結是 404 頁面（Next.js 的） | 資料夾名稱打錯：要是 `share/[token]/page.tsx`，中括號也要 | 對照步驟 51 |
+| 分享頁一直「載入中…」，Console 有 `404` | 後端沒掛 `share.router` | 對照步驟 45 |
+| 按「產生分享連結」沒反應，Console 有 `500`，uvicorn 印 `column trips.share_token does not exist` | 遷移檔還沒 `upgrade` | `uv run alembic upgrade head` |
+| 按了「產生分享連結」，畫面沒有變成綠色 | `ShareBox` 的 `refresh` 作廢的 key 不是 `["trip", trip.id]`，或 `TripOut` 少了 `share_token` | 對照步驟 42、50 |
+| 按「複製」沒反應，Console 寫 `navigator.clipboard` 是 `undefined` | 用 `127.0.0.1` 或區網 IP 打開網站；剪貼簿只在 `https` 或 `localhost` 能用 | 用 `http://localhost:3000` |
+| 編輯頁整頁壞掉，錯誤寫 `dayDate is not defined` | 刪了編輯頁的 `dayDate` 函式，但忘了加 import | 對照步驟 49 ② |
+| 「我的行程」、編輯頁都回 500，uvicorn 印 `ResponseValidationError`、`'loc': ('response', 0, 'shate_token')`、`Field required`（2026-11-21 你實際遇到的） | `TripOut` 的欄位打成 `shate_token`。資料庫查詢其實成功了，是出餐單要一欄 `shate_token`，行程物件上只有 `share_token`，對不起來 | 改成 `share_token`。看錯誤時先看最後的錯誤名稱和指到你自己檔案的那一行，`site-packages` 裡的可以先跳過 |
+
+### 📌 這一段的 3 個重點
+
+1. **分享連結的亂碼就是密碼**：誰拿到誰就能看，所以要用猜不到的亂碼，不能用行程編號。停止分享就是把亂碼清掉，再分享會換一串新的。
+2. **參觀券只能看**：分享的那串跟鑰匙是不同欄位，`get_editable_trip` 不認得它；分享頁用自己的出餐單，只給看需要的東西。
+3. **能改分享狀態的 API，一樣要過門口**：產生、停止分享都用 `get_editable_trip`。原專案漏了這一關，任何人都能替別人的行程產生連結。
+
+### 6. 小測驗
+
+（提示：每題都可以用「如果不這樣做，會發生什麼壞事？」來想。）
+
+1. 分享連結為什麼用一串亂碼，不直接用 `/share/1`（行程編號）？
+2. 原專案「產生分享連結」沒有檢查是不是主人，會發生什麼壞事？
+3. 停止分享時，為什麼是把 `share_token` 清掉，而不是另外加一個 `is_shared = False` 的欄位？
+4. 分享頁的出餐單，為什麼不直接用 `TripOut`？
+
+<details>
+<summary>點開看解答</summary>
+
+1. 有連結就能看，不用登入。如果用行程編號，別人從 `/share/1` 一路試到 `/share/1000`，就能看到所有人的行程，連沒分享的也一樣。22 個字的亂碼猜不到，只有主人傳給的人才拿得到。
+2. 任何人只要知道（或一路試）行程編號，就能替別人的行程產生分享連結，API 會把那串亂碼回給**他**，他再用 `/api/share/那串` 就能看到整個行程。等於所有行程都是公開的。
+3. 如果只是把 `is_shared` 改成 `False`，亂碼還留著；之後主人再分享一次（改回 `True`），**舊的連結又能用了**，之前不想再給看的人又看得到。把亂碼清掉，再分享會發一串新的，舊連結永遠打不開。而且少一個欄位，就少一種「兩個欄位對不起來」的可能。
+4. `TripOut` 是給主人看的：有行程編號、`share_token`，之後也可能再加更多只有主人該知道的東西。分享頁如果直接用它，`TripOut` 一改，看分享的人也跟著多看到。分開一個 `SharedTripOut`，只放看的人需要的，以後改 `TripOut` 也不怕洩漏。
+
+</details>
+
+#### 你的實作紀錄（2026-11-21）
+
+- 一開始「我的行程」整頁 500：`schemas/trip.py` 的 `TripOut` 打成 `shate_token`。資料庫查詢其實成功了，是出餐單要一欄 `shate_token`，行程物件上只有 `share_token`，`response_model` 對不起來就擋下來（`ResponseValidationError`、`Field required`）。改成 `share_token` 就好了，已經加進上面的常見踩雷。
+- 改好之後，後端 6 個檔案、前端 6 個檔案都正確，其中 9 個跟教材一模一樣。差別只有排版：`models.py` 少一行空白；`main.py` 的 import 順序不同（`share` 放最後）；編輯頁的 `dayDate` import 前後多了空白行；分享頁的景點名稱那行被編輯器折成三行。型別檢查、lint 都通過。
+- 遷移檔 `dc5ba92ae679`：`add_column` ＋ `ix_trips_share_token`（`unique=True`），資料庫在最新版。
+- 你的資料庫（只讀）：4 個行程現在都**沒有**在分享（`share_token` 都是空的），步驟 52 最後應該是停止分享了。
+- 打你開著的後端（沒有 cookie）：產生分享連結、停止分享都是 `401`；亂打的分享連結 `404`「找不到這個分享，可能已經停止分享了」。`/docs` 裡的 `SharedTripOut` 只有 `title`、`days`、`start_date`、`items`。
+- 用 Chrome 開一個沒有 cookie 的視窗打開 `/share/not-a-real-token`：顯示「找不到這個分享，可能已經停止分享了」，沒有送出任何 POST。
+- **第 8 課完成。**

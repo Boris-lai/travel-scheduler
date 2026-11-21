@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 import GooglePlaceSearch from "@/app/components/GooglePlaceSearch";
+import ShareBox from "@/app/components/ShareBox";
 import SortableStop from "@/app/components/SortableStop";
 import TripMap from "@/app/components/TripMap";
 
@@ -23,15 +24,10 @@ import {
   removeTripPlace,
   saveDayItinerary,
 } from "@/app/lib/api";
-import type { ItineraryItem, TimeField, TravelMode } from "@/app/lib/types";
 
-// 第 N 天的日期 ＝ 出發日 ＋（N − 1）天。後端沒有存，前端自己算
-function dayDate(startDate: string | null, day: number) {
-  if (!startDate) return "";
-  const date = new Date(`${startDate}T00:00:00`);
-  date.setDate(date.getDate() + day - 1);
-  return `${date.getMonth() + 1}/${date.getDate()}`;
-}
+import { dayDate } from "@/app/lib/dayDate";
+
+import type { ItineraryItem, TimeField, TravelMode } from "@/app/lib/types";
 
 export default function TripEditPage() {
   // 網址 /trips/1 裡的「1」。資料夾叫 [tripId]，所以這裡就叫 tripId
@@ -180,6 +176,10 @@ export default function TripEditPage() {
       <p className="mb-6 text-gray-500">
         {trip.days} 天{trip.start_date && `・${trip.start_date} 出發`}
       </p>
+
+      <div className="mb-6">
+        <ShareBox trip={trip} />
+      </div>
 
       {error && (
         <p className="mb-4 rounded-lg bg-red-50 p-3 text-red-600">

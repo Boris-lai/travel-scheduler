@@ -121,6 +121,12 @@ npm install
 | `GEMINI_API_KEY` | AI 讀文章找景點用 |
 | `MAPS_API_KEY` | 後端問 Google（Places、Routes）用的伺服器金鑰 |
 
+另外有 1 個**可以不設**的變數：
+
+| 變數 | 是什麼 |
+|---|---|
+| `COOKIE_SECURE` | 登入的 cookie 是不是只在 https 才送。沒設就是 `false`，本機（http）就要這樣；第 10 課上線改成 https 後，再設成 `true` |
+
 `frontend/.env.local` 需要這 1 個變數：
 
 | 變數 | 是什麼 |

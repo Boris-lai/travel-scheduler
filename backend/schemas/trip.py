@@ -19,6 +19,7 @@ class TripOut(BaseModel):
     days: int
     start_date: date | None
     created_at: datetime
+    share_token: str | None  # 有分享才有：分享連結裡的那串亂碼
 
 
 # 點餐單：把一個景點加進景點池

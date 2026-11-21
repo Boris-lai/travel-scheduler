@@ -25,6 +25,7 @@ export type Trip = {
   days: number;
   start_date: string | null; // 例如 "2026-12-20"，沒填就是 null
   created_at: string;
+  share_token: string | null; // 有分享才有：分享連結裡的那串亂碼
 };
 
 // 後端 TripCreateOut：建立行程時回的資料。沒登入建立的，會多一把鑰匙
@@ -88,4 +89,17 @@ export type SignupInput = {
 export type LoginInput = {
   email: string;
   password: string;
+};
+
+// 後端 POST /api/trips/{id}/share 回傳的樣子（schemas/share.py 的 ShareOut）
+export type ShareResult = {
+  share_token: string;
+};
+
+// 後端 GET /api/share/{token} 回傳的樣子（schemas/share.py 的 SharedTripOut）：只能看的行程
+export type SharedTrip = {
+  title: string;
+  days: number;
+  start_date: string | null;
+  items: ItineraryItem[]; // 每一天的每一站
 };
