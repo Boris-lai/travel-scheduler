@@ -3,10 +3,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-
+import DayTabs from "@/app/components/DayTabs";
 import TripMap from "@/app/components/TripMap";
 import { getSharedTrip } from "@/app/lib/api";
-import { dayDate } from "@/app/lib/dayDate";
+
 import type { TravelMode } from "@/app/lib/types";
 
 const MODE_LABELS: Record<TravelMode, string> = {
@@ -45,7 +45,6 @@ export default function SharePage() {
     return <main className="mx-auto max-w-5xl p-6 text-gray-500">載入中…</main>;
   }
 
-  const dayNumbers = Array.from({ length: trip.days }, (_, i) => i + 1);
   const dayItems = trip.items.filter((item) => item.day_index === activeDay);
 
   return (
@@ -58,21 +57,13 @@ export default function SharePage() {
         {trip.days} 天{trip.start_date && `・${trip.start_date} 出發`}
       </p>
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        {dayNumbers.map((day) => (
-          <button
-            key={day}
-            type="button"
-            onClick={() => setActiveDay(day)}
-            className={`rounded-full px-4 py-1 text-sm font-semibold ${
-              day === activeDay
-                ? "bg-blue-600 text-white"
-                : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-            }`}
-          >
-            第 {day} 天 {dayDate(trip.start_date, day)}
-          </button>
-        ))}
+      <div className="mb-4">
+        <DayTabs
+          days={trip.days}
+          startDate={trip.start_date}
+          activeDay={activeDay}
+          onChange={setActiveDay}
+        />
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">

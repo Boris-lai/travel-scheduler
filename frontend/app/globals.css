@@ -1,1 +1,23 @@
 @import "tailwindcss";
+
+/* 路線圖風格的顏色和字型。寫在 @theme 裡，Tailwind 就會多出對應的 class：
+   --color-ink → text-ink、bg-ink、border-ink；--font-num → font-num */
+@theme {
+  --color-platform: #eceff3; /* 月台灰：整個網站的底色 */
+  --color-board: #ffffff; /* 站牌白：內容放在這上面 */
+  --color-ink: #13294b; /* 站名藍：文字、導覽列、主要按鈕 */
+  --color-ink-2: #5b6b82; /* 次要的字：說明、日期 */
+  --color-rule: #d5dbe3; /* 站牌的細框線 */
+}
+
+/* 字型是 layout.tsx 用 next/font 載入的，這裡接上它給的變數名稱 */
+@theme inline {
+  --font-sans: var(--font-noto-sans-tc), system-ui, sans-serif;
+  --font-num: var(--font-barlow), var(--font-noto-sans-tc), sans-serif;
+}
+
+/* 用鍵盤（Tab）移動時，看得到現在在哪個按鈕上 */
+:focus-visible {
+  outline: 3px solid #0072bc;
+  outline-offset: 2px;
+}

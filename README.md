@@ -158,4 +158,5 @@ uv run alembic upgrade head
 | 編輯頁顯示「後端回應 500」或「讀取行程失敗」 | 後端沒開 | 開分頁 2 |
 | 搜尋景點一直轉圈，沒有新景點進來 | worker 沒開，或改了程式沒重開 | 開分頁 3，或 `Ctrl + C` 再重開 |
 | 後端錯誤寫 `column ... does not exist` 或 `relation ... does not exist` | 有遷移檔還沒套用到資料庫 | 在 `backend` 執行 `uv run alembic upgrade head` |
+| 改了 `globals.css`（顏色、字型設定），畫面卻沒變 | 開發伺服器的快取（`.next` 資料夾）還在用舊版 | 停掉 `npm run dev`，在 `frontend` 執行 `rm -rf .next`，再 `npm run dev`（`.next` 會自己重建） |
 | `npm run dev` 出現 `Could not read package.json` | 不在 `frontend` 資料夾裡 | 先 `cd ~/Desktop/travel-scheduler/frontend` |

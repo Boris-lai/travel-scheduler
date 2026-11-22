@@ -1,8 +1,23 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import AuthCorner from "@/app/components/AuthCorner";
+import { Barlow_Semi_Condensed, Noto_Sans_TC } from "next/font/google";
+
+import NavBar from "@/app/components/NavBar";
 import Providers from "@/app/providers";
 import "./globals.css";
+
+// 中文：Noto Sans TC。要用到最粗的 900（站名、標題），像車站站牌的粗黑體
+const notoSansTC = Noto_Sans_TC({
+  weight: ["400", "700", "900"],
+  subsets: ["latin"],
+  variable: "--font-noto-sans-tc", // globals.css 用這個名字接上
+});
+
+// 時間、數字：Barlow Semi Condensed，參考道路和交通號誌設計的字型
+const barlow = Barlow_Semi_Condensed({
+  weight: ["500", "700"],
+  subsets: ["latin"],
+  variable: "--font-barlow",
+});
 
 export const metadata: Metadata = {
   title: "Easy Travel Scheduler",
@@ -16,24 +31,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-Hant">
-      <body className="min-h-screen bg-gray-50 text-gray-800">
+    <html
+      lang="zh-Hant"
+      className={`${notoSansTC.variable} ${barlow.variable}`}
+    >
+      <body className="min-h-screen bg-platform font-sans text-ink">
         <Providers>
-          {/* 每一頁最上面都有的導覽列 */}
-          <nav className="border-b border-gray-200 bg-white">
-            <div className="mx-auto flex max-w-5xl items-center gap-6 px-6 py-3 font-semibold">
-              <Link href="/" className="hover:text-blue-600">
-                搜尋景點
-              </Link>
-              <Link href="/trips" className="hover:text-blue-600">
-                我的行程
-              </Link>
-              {/* ml-auto：把登入那一塊推到最右邊 */}
-              <div className="ml-auto">
-                <AuthCorner />
-              </div>
-            </div>
-          </nav>
+          <NavBar />
           {children}
         </Providers>
       </body>

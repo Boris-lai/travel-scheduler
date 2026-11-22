@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { logout } from "@/app/lib/api";
 import { useMe } from "@/app/lib/useMe";
 
-// 導覽列右邊：沒登入顯示「登入／註冊」，登入了顯示名字和「登出」
+// 導覽列右邊：沒登入顯示「登入／註冊」，登入了顯示名字和「登出」（放在深藍色的站牌上）
 export default function AuthCorner() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -27,7 +27,10 @@ export default function AuthCorner() {
 
   if (!me) {
     return (
-      <Link href="/login" className="hover:text-blue-600">
+      <Link
+        href="/login"
+        className="rounded-full border border-white/60 px-4 py-1 text-white hover:bg-white hover:text-ink"
+      >
         登入／註冊
       </Link>
     );
@@ -35,12 +38,12 @@ export default function AuthCorner() {
 
   return (
     <div className="flex items-center gap-3">
-      <span className="font-normal text-gray-500">哈囉，{me.name}</span>
+      <span className="text-white/80">哈囉，{me.name}</span>
       <button
         type="button"
         onClick={() => logoutMutation.mutate()}
         disabled={logoutMutation.isPending}
-        className="rounded-lg px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+        className="rounded-full border border-white/60 px-4 py-1 text-sm text-white hover:bg-white hover:text-ink disabled:opacity-50"
       >
         登出
       </button>

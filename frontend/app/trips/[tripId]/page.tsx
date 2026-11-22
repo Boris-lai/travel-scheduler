@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 import GooglePlaceSearch from "@/app/components/GooglePlaceSearch";
+import DayTabs from "@/app/components/DayTabs";
 import ShareBox from "@/app/components/ShareBox";
 import SortableStop from "@/app/components/SortableStop";
 import TripMap from "@/app/components/TripMap";
@@ -24,8 +25,6 @@ import {
   removeTripPlace,
   saveDayItinerary,
 } from "@/app/lib/api";
-
-import { dayDate } from "@/app/lib/dayDate";
 
 import type { ItineraryItem, TimeField, TravelMode } from "@/app/lib/types";
 
@@ -101,7 +100,6 @@ export default function TripEditPage() {
     return <main className="mx-auto max-w-5xl p-6 text-gray-500">載入中…</main>;
   }
 
-  const dayNumbers = Array.from({ length: trip.days }, (_, i) => i + 1); // 例如 [1, 2, 3]
   const allItems = itineraryQuery.data ?? [];
   // 這一天的每一站：有草稿就顯示草稿，沒有就顯示後端的資料
   const dayItems =
@@ -244,21 +242,13 @@ export default function TripEditPage() {
 
         {/* 右邊：每日行程 */}
         <section className="rounded-xl bg-white p-5 shadow">
-          <div className="mb-4 flex flex-wrap gap-2">
-            {dayNumbers.map((day) => (
-              <button
-                key={day}
-                type="button"
-                onClick={() => changeDay(day)}
-                className={`rounded-full px-4 py-1 text-sm font-semibold ${
-                  day === activeDay
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }`}
-              >
-                第 {day} 天 {dayDate(trip.start_date, day)}
-              </button>
-            ))}
+          <div className="mb-4">
+            <DayTabs
+              days={trip.days}
+              startDate={trip.start_date}
+              activeDay={activeDay}
+              onChange={changeDay}
+            />
           </div>
 
           {/* 有草稿才出現：儲存或取消 */}
