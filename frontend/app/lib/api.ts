@@ -1,5 +1,6 @@
 import type {
   Destination,
+  DestinationPhoto,
   ItineraryItem,
   LegEstimate,
   LoginInput,
@@ -67,6 +68,13 @@ export function searchDestinations(location: string) {
 export function searchGooglePlaces(text: string) {
   return apiFetch<PlaceSuggestion[]>(
     `/api/places/autocomplete?text=${encodeURIComponent(text)}`,
+  );
+}
+
+// 景點的照片：後端再去問 Google。這個景點沒有照片，會拿到 null
+export function getDestinationPhoto(destinationId: number) {
+  return apiFetch<DestinationPhoto | null>(
+    `/api/destinations/${destinationId}/photo`,
   );
 }
 

@@ -21,3 +21,42 @@
   outline: 3px solid #0072bc;
   outline-offset: 2px;
 }
+
+/* 首頁的路線：從左畫到右。線加了 pathLength="1"，整條線的長度就當成 1 */
+@keyframes draw-line {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.route-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: draw-line linear forwards; /* 要畫多久，在元件裡用 style 給 */
+}
+
+/* 線畫到哪一站，那一站就冒出來 */
+@keyframes station-in {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.station-in {
+  animation: station-in 0.3s ease-out both;
+}
+
+/* 系統設定了「減少動態效果」的人：不播動畫，直接顯示畫好的樣子 */
+@media (prefers-reduced-motion: reduce) {
+  .route-draw,
+  .station-in {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}

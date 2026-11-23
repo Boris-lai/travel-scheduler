@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import AttractionCard from "@/app/components/AttractionCard";
+import HomeHero from "./components/HomeHero";
+
 import {
   addTripPlace,
   listTripPlaces,
@@ -84,106 +86,107 @@ export default function Home() {
   function addButton(destinationId: number) {
     if (!selectedTrip) return null; // 還沒選行程（或選的不在清單裡），就不顯示
     if (inPool.has(destinationId)) {
-      return (
-        <span className="text-xs font-semibold text-gray-400">✓ 已加入</span>
-      );
+      return <span className="text-sm font-bold text-ink-2">✓ 已加入</span>;
     }
     return (
       <button
         type="button"
         onClick={() => addPlace.mutate(destinationId)}
         disabled={addPlace.isPending}
-        className="shrink-0 rounded-full bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:bg-gray-400"
+        className="rounded-full border-2 border-ink px-4 py-1 text-sm font-bold hover:bg-ink hover:text-white disabled:opacity-50"
       >
         加入＋
       </button>
     );
   }
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault(); // 表單送出時，瀏覽器預設會重新整理頁面，把它擋掉
-    setSearched(keyword.trim());
+  // 開始搜尋：在輸入框按「搜尋」、或點了路線上的城市，都走這裡
+  function startSearch(location: string) {
+    if (!location) return; // 什麼都沒打，就不搜
+    setSearched(location);
     setTaskFailed(false);
   }
 
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <h1 className="mb-6 text-3xl font-bold">Easy Travel Scheduler</h1>
-
-      <form onSubmit={handleSubmit} className="mb-8 flex gap-2">
-        <input
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          placeholder="想去哪裡？例如：京都"
-          className="flex-1 rounded-lg border border-gray-300 bg-white px-4 py-2"
-        />
-        <button
-          type="submit"
-          disabled={isFetching}
-          className="rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white hover:bg-blue-700 disabled:bg-gray-400"
-        >
-          {isFetching ? "搜尋中…" : "搜尋"}
-        </button>
-      </form>
-
-      <div className="mb-6 flex items-center gap-2 text-sm">
-        <span className="text-gray-600">加入到：</span>
-        <select
-          value={selectedTrip?.id ?? ""}
-          onChange={(e) =>
-            setTripId(e.target.value ? Number(e.target.value) : null)
-          }
-          className="rounded-lg border border-gray-300 bg-white px-3 py-1"
-        >
-          <option value="">選一個行程</option>
-          {trips?.map((trip) => (
-            <option key={trip.id} value={trip.id}>
-              {trip.title}
-            </option>
-          ))}
-        </select>
-        {trips?.length === 0 && (
-          <Link href="/trips" className="text-blue-600 hover:underline">
-            先去建立一個行程
-          </Link>
-        )}
-        {addPlace.isError && (
-          <span className="text-red-600">{addPlace.error.message}</span>
-        )}
-      </div>
+    <main className="mx-auto max-w-5xl px-4 pb-16 sm:px-6">
+      <HomeHero
+        keyword={keyword}
+        onKeywordChange={setKeyword}
+        onSearch={startSearch}
+        searching={isFetching}
+      />
 
       {isError && (
-        <p className="mb-4 rounded-lg bg-red-50 p-3 text-red-600">
+        <p className="mb-4 rounded-md border-l-4 border-[#E5302F] bg-board p-3">
           搜尋失敗：請確認後端（uvicorn）有在跑
         </p>
       )}
 
       {taskFailed && (
-        <p className="mb-4 rounded-lg bg-red-50 p-3 text-red-600">
+        <p className="mb-4 rounded-md border-l-4 border-[#E5302F] bg-board p-3">
           AI 找景點失敗了，請重新整理頁面後再搜一次
         </p>
       )}
 
+      {/* AI 在背景找的時候：像車站的電子看板，深藍底白字 */}
       {data?.status === "processing" && !taskFailed && (
-        <p className="mb-4 rounded-lg bg-yellow-50 p-3 text-yellow-700">
-          🤖 資料庫裡「{data.location}」的景點還不夠，AI 正在背景幫你找，大約 1
+        <p className="mb-4 rounded-md bg-ink p-4 text-white">
+          資料庫裡「{data.location}」的景點還不夠，AI 正在背景幫你找，大約 1
           分鐘。找到會自動顯示，不用重新整理。
         </p>
       )}
 
       {data && (
-        <>
-          <p className="mb-4 text-gray-600">
-            「{data.location}」的景點：{data.destinations.length} 個
-          </p>
-          <div className="grid gap-4 sm:grid-cols-2">
+        <section>
+          {/* 結果的標題列：左邊是城市和景點數，右邊是「加入到」哪個行程 */}
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3 border-b-2 border-ink pb-3">
+            <h2 className="text-2xl font-black">
+              {data.location}
+              <span className="ml-2 font-num text-lg font-bold text-ink-2">
+                {data.destinations.length} 個景點
+              </span>
+            </h2>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label htmlFor="trip-select" className="text-ink-2">
+                加入到
+              </label>
+              <select
+                id="trip-select"
+                value={selectedTrip?.id ?? ""}
+                onChange={(e) =>
+                  setTripId(e.target.value ? Number(e.target.value) : null)
+                }
+                className="rounded-md border border-rule bg-board px-3 py-1.5 font-bold"
+              >
+                <option value="">選一個行程</option>
+                {trips?.map((trip) => (
+                  <option key={trip.id} value={trip.id}>
+                    {trip.title}
+                  </option>
+                ))}
+              </select>
+              {trips?.length === 0 && (
+                <Link href="/trips" className="font-bold underline">
+                  先去建立一個行程
+                </Link>
+              )}
+            </div>
+          </div>
+
+          {addPlace.isError && (
+            <p className="mb-4 rounded-md border-l-4 border-[#E5302F] bg-board p-3 text-sm">
+              {addPlace.error.message}
+            </p>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {data.destinations.map((d) => (
               <AttractionCard key={d.id} destination={d}>
                 {addButton(d.id)}
               </AttractionCard>
             ))}
           </div>
-        </>
+        </section>
       )}
     </main>
   );

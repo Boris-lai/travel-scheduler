@@ -30,3 +30,11 @@ class DestinationOut(BaseModel):
     geo_tags: str | None
     source: str
     created_at: datetime
+
+
+# 景點的照片。Google 給的網址過一陣子就會失效，所以不存，每次都重新拿
+class PhotoOut(BaseModel):
+    url: str  # 照片網址
+    author_name: str | None  # 拍照的人
+    author_uri: str | None  # 拍照的人在 Google 地圖上的頁面
+    maps_uri: str | None  # 這張照片在 Google 地圖上的頁面

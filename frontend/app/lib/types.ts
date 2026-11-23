@@ -10,6 +10,14 @@ export type Destination = {
   google_place_id: string | null; // Google 的地點 id
 };
 
+// 後端 GET /api/destinations/{id}/photo 回傳的樣子（沒有照片時，後端回 null）
+export type DestinationPhoto = {
+  url: string; // 照片網址
+  author_name: string | null; // 拍照的人
+  author_uri: string | null; // 拍照的人在 Google 地圖上的頁面
+  maps_uri: string | null; // 這張照片在 Google 地圖上的頁面
+};
+
 // 後端 POST /api/search 回傳的樣子（schemas/search.py 的 SearchOut）
 export type SearchResponse = {
   location: string;

@@ -92,6 +92,47 @@ def place_details(google_place_id: str) -> dict:
     }
 
 
+# 只要 photos 一個欄位：屬於 Place Details Essentials (IDs Only)，不限次數免費
+PHOTOS_FIELD_MASK = "photos"
+PHOTO_WIDTH = 640  # 照片要多寬（像素）。卡片大約 320 寬，手機和 Mac 的螢幕要兩倍才清楚
+
+
+def place_photo(google_place_id: str) -> dict | None:
+    """一個地點的第一張照片。Google 不准存照片，所以每次都重新問"""
+    # 第 1 步：問這個地點有哪些照片（免費）
+    resp = requests.get(
+        DETAILS_URL + google_place_id,
+        headers={"X-Goog-Api-Key": MAPS_API_KEY,
+                 "X-Goog-FieldMask": PHOTOS_FIELD_MASK},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    photos = resp.json().get("photos", [])
+    if not photos:
+        return None  # 這個地點沒有照片
+
+    photo = photos[0]  # 只拿第一張
+    # 第 2 步：拿這張照片的網址（要錢：每月前 1,000 次免費，之後每 1,000 次 7 美元）
+    media = requests.get(
+        f"https://places.googleapis.com/v1/{photo['name']}/media",
+        headers={"X-Goog-Api-Key": MAPS_API_KEY},
+        # skipHttpRedirect：回給我們網址就好，不要直接回整張圖片
+        params={"maxWidthPx": PHOTO_WIDTH, "skipHttpRedirect": "true"},
+        timeout=10,
+    )
+    media.raise_for_status()
+
+    # 拍照的人：Google 規定一定要標出來。通常只有一位，就拿第一位
+    authors = photo.get("authorAttributions", [])
+    author = authors[0] if authors else {}
+    return {
+        "url": media.json()["photoUri"],
+        "author_name": author.get("displayName"),
+        "author_uri": author.get("uri"),
+        "maps_uri": photo.get("googleMapsUri"),
+    }
+
+
 if __name__ == "__main__":
     import sys
 

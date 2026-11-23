@@ -19,8 +19,12 @@ def find_existing(db: Session, location: str) -> list[Destination]:
         .where(
             or_(
                 Destination.input_region == location,
-                Destination.city_name.contains(location),
-                Destination.geo_tags.contains(location),
+                # 「開頭是」，不是「包含」：不然搜「京都」會找到「東京都」
+                Destination.city_name.startswith(location),
+                # geo_tags 像「日本,京都府,京都市」，用逗號分成好幾段，要其中一段的開頭是 location。
+                # 第一段：看整串的開頭；後面幾段：每一段前面都有逗號，所以找「,京都」
+                Destination.geo_tags.startswith(location),
+                Destination.geo_tags.contains("," + location),
             )
         )
         .order_by(Destination.id)
